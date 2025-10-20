@@ -7,5 +7,5 @@ license-file = "LICENSE"
 repository = "https://github.com/apfitzge/rts-alloc"
 authors = ["Andrew Fitzgerald <apfitzge@gmail.com>"]
 
-[dependencies]
+[target."cfg(unix)".dependencies]
 libc = { version = "0.2.174" }

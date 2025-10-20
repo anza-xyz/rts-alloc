@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 mod align;
 pub mod allocator;
 mod cache_aligned;
