@@ -12,7 +12,6 @@ use std::{
     fs::File,
     mem::offset_of,
     os::{fd::AsRawFd, raw::c_void},
-    path::Path,
     ptr::NonNull,
     sync::atomic::Ordering,
 };
@@ -20,7 +19,7 @@ use std::{
 /// Create and initialize the allocator's backing file.
 /// Returns pointer to header.
 pub fn create(
-    path: impl AsRef<Path>,
+    file: &File,
     file_size: usize,
     num_workers: u32,
     slab_size: u32,
@@ -36,15 +35,19 @@ pub fn create(
         return Err(Error::InvalidFileSize);
     }
 
-    // Create the file and mmap it.
-    let file = create_file(path, file_size)?;
-    let mmap = open_mmap(&file, file_size)?;
+    // Resize the file if it's currently 0 sized, else error.
+    if file.metadata()?.len() != 0 {
+        return Err(Error::AlreadyInitialized);
+    }
+    file.set_len(file_size as u64)?;
 
-    let header = NonNull::new(mmap.cast::<Header>()).expect("mmap already checked for null");
+    // Map the file into memory.
+    let mmap = open_mmap(file, file_size)?;
 
     // Initialize the header.
     // SAFETY: The header is valid for any byte pattern.
     //         There is sufficient space for a `Header` and trailing data.
+    let header = NonNull::new(mmap.cast::<Header>()).expect("mmap already checked for null");
     unsafe {
         initialize::allocator(header, slab_size, num_workers, layout);
     }
@@ -53,10 +56,9 @@ pub fn create(
 }
 
 /// Join an existing allocator, returning a pointer to the header and size.
-pub fn join(path: impl AsRef<Path>) -> Result<(NonNull<Header>, usize), Error> {
-    let file = open_file(path)?;
-    let file_size = file.metadata().map_err(Error::IoError)?.len() as usize;
-    let mmap = open_mmap(&file, file_size)?;
+pub fn join(file: &File) -> Result<(NonNull<Header>, usize), Error> {
+    let file_size = file.metadata()?.len() as usize;
+    let mmap = open_mmap(file, file_size)?;
     let header = NonNull::new(mmap.cast::<Header>()).expect("mmap already checked for null");
 
     // Verify header
@@ -120,30 +122,6 @@ fn open_mmap(file: &File, size: usize) -> Result<*mut c_void, Error> {
     }
 
     Ok(mmap)
-}
-
-fn create_file(file_path: impl AsRef<Path>, size: usize) -> Result<File, Error> {
-    let file_path = file_path.as_ref();
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(file_path)
-        .map_err(Error::IoError)?;
-    file.set_len(size as u64).map_err(Error::IoError)?;
-
-    Ok(file)
-}
-
-fn open_file(file_path: impl AsRef<Path>) -> Result<File, Error> {
-    let file_path = file_path.as_ref();
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(file_path)
-        .map_err(Error::IoError)?;
-
-    Ok(file)
 }
 
 pub mod initialize {

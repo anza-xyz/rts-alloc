@@ -10,7 +10,7 @@ use crate::{error::Error, header::Header, size_classes::size_class_index};
 use core::mem::offset_of;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
-use std::path::Path;
+use std::fs::File;
 
 pub struct Allocator {
     header: NonNull<Header>,
@@ -19,9 +19,9 @@ pub struct Allocator {
 }
 
 impl Allocator {
-    /// Create a new `Allocator` with new file and given parameters.
+    /// Create a new `Allocator` in the provided file with the given parameters.
     pub fn create(
-        path: impl AsRef<Path>,
+        file: &File,
         file_size: usize,
         num_workers: u32,
         slab_size: u32,
@@ -30,18 +30,18 @@ impl Allocator {
         if worker_index >= num_workers {
             return Err(Error::InvalidWorkerIndex);
         }
-        let header = crate::init::create(path, file_size, num_workers, slab_size)?;
+        let header = crate::init::create(file, file_size, num_workers, slab_size)?;
 
         // SAFETY: The header is guaranteed to be valid and initialized.
         unsafe { Allocator::new(header, file_size, worker_index) }
     }
 
-    /// Join an existing allocator at the given path.
+    /// Join an existing allocator in the provided file.
     ///
     /// # Safety
     /// - `worker_index` must be uniquely assigned to this worker thread/process.
-    pub unsafe fn join(path: impl AsRef<Path>, worker_index: u32) -> Result<Self, Error> {
-        let (header, file_size) = crate::init::join(path)?;
+    pub unsafe fn join(file: &File, worker_index: u32) -> Result<Self, Error> {
+        let (header, file_size) = crate::init::join(file)?;
 
         // Check if the worker index is valid.
         // SAFETY: The header is guaranteed to be valid and initialized.
