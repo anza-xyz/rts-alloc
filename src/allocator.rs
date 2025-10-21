@@ -74,6 +74,8 @@ impl Allocator {
     }
 }
 
+unsafe impl Send for Allocator {}
+
 impl Drop for Allocator {
     fn drop(&mut self) {
         #[cfg(test)]
