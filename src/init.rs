@@ -118,7 +118,7 @@ fn open_mmap(file: &File, size: usize) -> Result<*mut c_void, Error> {
     };
 
     if mmap == libc::MAP_FAILED {
-        return Err(Error::MMapError(std::io::Error::last_os_error()));
+        return Err(Error::MmapError(std::io::Error::last_os_error()));
     }
 
     Ok(mmap)
