@@ -1,7 +1,7 @@
 [package]
 name = "rts-alloc"
 edition = "2021"
-version = "0.1.1"
+version = "0.2.0"
 description = "Shared memory allocator intended for small frequent allocations"
 license-file = "LICENSE"
 repository = "https://github.com/apfitzge/rts-alloc"
