@@ -8,13 +8,7 @@ use crate::{
     linked_list_node::LinkedListNode,
     size_classes::{MAX_SIZE, MIN_SIZE},
 };
-use std::{
-    fs::File,
-    mem::offset_of,
-    os::{fd::AsRawFd, raw::c_void},
-    ptr::NonNull,
-    sync::atomic::Ordering,
-};
+use std::{fs::File, mem::offset_of, os::fd::AsRawFd, ptr::NonNull, sync::atomic::Ordering};
 
 /// Create and initialize the allocator's backing file.
 /// Returns pointer to header.
@@ -42,12 +36,12 @@ pub fn create(
     file.set_len(file_size as u64)?;
 
     // Map the file into memory.
-    let mmap = open_mmap(file, file_size)?;
+    let mmap = map_file(file, file_size)?;
 
     // Initialize the header.
     // SAFETY: The header is valid for any byte pattern.
     //         There is sufficient space for a `Header` and trailing data.
-    let header = NonNull::new(mmap.cast::<Header>()).expect("mmap already checked for null");
+    let header = mmap.cast::<Header>();
     unsafe {
         initialize::allocator(header, slab_size, num_workers, layout);
     }
@@ -58,8 +52,8 @@ pub fn create(
 /// Join an existing allocator, returning a pointer to the header and size.
 pub fn join(file: &File) -> Result<(NonNull<Header>, usize), Error> {
     let file_size = file.metadata()?.len() as usize;
-    let mmap = open_mmap(file, file_size)?;
-    let header = NonNull::new(mmap.cast::<Header>()).expect("mmap already checked for null");
+    let mmap = map_file(file, file_size)?;
+    let header = mmap.cast::<Header>();
 
     // Verify header
     {
@@ -105,23 +99,36 @@ fn verify_slab_size(slab_size: u32) -> Result<(), Error> {
     Ok(())
 }
 
-fn open_mmap(file: &File, size: usize) -> Result<*mut c_void, Error> {
-    let mmap = unsafe {
+/// Maps a file into memory.
+fn map_file(file: &File, size: usize) -> Result<NonNull<u8>, Error> {
+    #[cfg(target_os = "linux")]
+    {
+        // On linux first attempt to map with hugepages. Fall back to regular on failure.
+        let r = map_file_with_flags(file, size, libc::MAP_SHARED | libc::MAP_HUGETLB);
+        if r.is_ok() {
+            return r;
+        }
+    }
+
+    map_file_with_flags(file, size, libc::MAP_SHARED)
+}
+
+fn map_file_with_flags(file: &File, size: usize, flags: libc::c_int) -> Result<NonNull<u8>, Error> {
+    let addr = unsafe {
         libc::mmap(
             core::ptr::null_mut(),
             size,
             libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
+            flags,
             file.as_raw_fd(),
             0,
         )
     };
-
-    if mmap == libc::MAP_FAILED {
+    if addr == libc::MAP_FAILED {
         return Err(Error::MmapError(std::io::Error::last_os_error()));
     }
 
-    Ok(mmap)
+    Ok(NonNull::new(addr.cast()).expect("already checked for null"))
 }
 
 pub mod initialize {
