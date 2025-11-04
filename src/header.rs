@@ -16,7 +16,7 @@ pub struct WorkerLocalListPartialFullHeads {
 #[repr(C)]
 pub struct Header {
     pub magic: u64,
-    pub version: u32,
+    pub version: AtomicU32,
     /// Maximum number of workers that can use this allocator.
     pub num_workers: u32,
     /// Number of slabs in the allocator.

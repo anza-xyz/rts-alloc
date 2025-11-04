@@ -65,8 +65,8 @@ pub fn join(file: &File) -> Result<(NonNull<Header>, usize), Error> {
     {
         // SAFETY: The header is assumed to be valid and initialized.
         let header = unsafe { header.as_ref() };
-        if header.magic != crate::header::MAGIC
-            || header.version != crate::header::VERSION
+        if header.version.load(Ordering::SeqCst) != crate::header::VERSION
+            || header.magic != crate::header::MAGIC
             || header.num_workers == 0
         {
             return Err(Error::InvalidHeader);
@@ -178,7 +178,9 @@ pub mod initialize {
             .global_free_list_head
             .store(NULL_U32, Ordering::Release);
         header.magic = crate::header::MAGIC;
-        header.version = crate::header::VERSION;
+        header
+            .version
+            .store(crate::header::VERSION, Ordering::SeqCst);
     }
 
     /// # Safety
