@@ -198,6 +198,15 @@ impl Allocator {
     pub unsafe fn free(&self, ptr: NonNull<u8>) {
         // SAFETY: The pointer is assumed to be valid and allocated by this allocator.
         let offset = unsafe { self.offset(ptr) };
+        self.free_offset(offset);
+    }
+
+    /// Free a block of memory previously allocated by this allocator.
+    ///
+    /// # Safety
+    /// - The `offset` must be a valid offset within the memory allocated by this allocator.
+    /// - The `offset` must not have been freed before.
+    pub unsafe fn free_offset(&self, offset: usize) {
         let allocation_indexes = self.find_allocation_indexes(offset);
 
         // Check if the slab is assigned to this worker.
