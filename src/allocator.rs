@@ -296,7 +296,11 @@ impl Allocator {
     }
 
     /// Return a ptr given a shareable offset - calculated by `offset`.
-    pub fn ptr_from_offset(&self, offset: usize) -> NonNull<u8> {
+    ///
+    /// # Safety
+    ///
+    /// - Caller must ensure the offset is valid for this allocator.
+    pub unsafe fn ptr_from_offset(&self, offset: usize) -> NonNull<u8> {
         unsafe { self.header.byte_add(offset) }.cast()
     }
 
