@@ -1,11 +1,11 @@
 [package]
 name = "rts-alloc"
+description = "Shared memory allocator intended for small frequent allocations"
 edition = "2021"
 version = "1.0.0"
-description = "Shared memory allocator intended for small frequent allocations"
-license-file = "LICENSE"
-repository = "https://github.com/apfitzge/rts-alloc"
-authors = ["Andrew Fitzgerald <apfitzge@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/anza-xyz/rts-alloc"
+authors = ["Anza Maintainers <maintainers@anza.xyz>"]
 
 [target."cfg(unix)".dependencies]
 libc = { version = "0.2.174" }
