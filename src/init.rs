@@ -28,6 +28,7 @@ pub fn create(
         return Err(Error::InvalidNumWorkers);
     }
     verify_slab_size(slab_size)?;
+    verify_allocator_size(file_size, slab_size)?;
 
     // Given parameters, calculate layout.
     let layout = layout::offsets(file_size, slab_size, num_workers);
@@ -72,6 +73,7 @@ pub fn join(file: &File) -> Result<(NonNull<Header>, usize), Error> {
             return Err(Error::InvalidHeader);
         }
         verify_slab_size(header.slab_size)?;
+        verify_allocator_size(file_size, header.slab_size)?;
         let expected_layout = layout::offsets(file_size, header.slab_size, header.num_workers);
 
         if header.num_slabs != expected_layout.num_slabs
@@ -100,6 +102,14 @@ fn verify_slab_size(slab_size: u32) -> Result<(), Error> {
 
     if slab_size / MIN_SIZE > u16::MAX as u32 {
         return Err(Error::InvalidSlabSize);
+    }
+
+    Ok(())
+}
+
+fn verify_allocator_size(file_size: usize, slab_size: u32) -> Result<(), Error> {
+    if file_size <= slab_size as usize {
+        return Err(Error::InvalidFileSize);
     }
 
     Ok(())
