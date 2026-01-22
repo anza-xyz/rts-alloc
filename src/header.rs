@@ -100,29 +100,19 @@ pub mod layout {
         pub slabs_offset: u32,
     }
 
-    pub fn offsets(file_size: usize, slab_size: u32, num_workers: u32) -> AllocatorLayout {
+    fn layout_for(num_workers: u32, slab_size: u32, num_slabs: u32) -> AllocatorLayout {
         let mut offset = header_size();
         offset += worker_local_list_heads_size(num_workers);
         offset = pad_for_free_list_elements(offset);
         let free_list_elements_offset = offset as u32;
-
-        // Get an upperbound on number of slabs:
-        // At least 1 slab slot is taken for the header and meta information.
-        let num_slabs_upperbound = ((file_size / slab_size as usize) - 1) as u32;
-
-        offset += free_list_elements_size(num_slabs_upperbound);
+        offset += free_list_elements_size(num_slabs);
         offset = pad_for_slab_meta(offset);
         let slab_shared_meta_offset = offset as u32;
-
-        offset += slab_meta_size(num_slabs_upperbound);
+        offset += slab_meta_size(num_slabs);
         offset = pad_for_slab_free_stacks(offset);
         let slab_free_stacks_offset = offset as u32;
-
-        offset += free_stacks_size(num_slabs_upperbound, slab_size);
-        offset = pad_for_slabs(offset, slab_size);
-        let slabs_offset = offset as u32;
-
-        let num_slabs = ((file_size - offset) / slab_size as usize) as u32;
+        offset += free_stacks_size(num_slabs, slab_size);
+        let slabs_offset = pad_for_slabs(offset, slab_size) as u32;
 
         AllocatorLayout {
             num_slabs,
@@ -131,6 +121,20 @@ pub mod layout {
             slab_free_stacks_offset,
             slabs_offset,
         }
+    }
+
+    pub fn min_file_size(num_workers: u32, slab_size: u32) -> usize {
+        let layout = layout_for(num_workers, slab_size, 1);
+        layout.slabs_offset as usize + slab_size as usize
+    }
+
+    pub fn offsets(file_size: usize, slab_size: u32, num_workers: u32) -> AllocatorLayout {
+        // Get an upperbound on number of slabs:
+        // At least 1 slab slot is taken for the header and meta information.
+        let num_slabs_upperbound = ((file_size / slab_size as usize) - 1) as u32;
+        let mut layout = layout_for(num_workers, slab_size, num_slabs_upperbound);
+        layout.num_slabs = ((file_size - layout.slabs_offset as usize) / slab_size as usize) as u32;
+        layout
     }
 
     /// The size of the header in bytes.
