@@ -122,7 +122,7 @@ pub mod layout {
         offset = pad_for_slabs(offset, slab_size);
         let slabs_offset = offset as u32;
 
-        let num_slabs = (file_size as u32 - slabs_offset) / slab_size;
+        let num_slabs = ((file_size - offset) / slab_size as usize) as u32;
 
         AllocatorLayout {
             num_slabs,
