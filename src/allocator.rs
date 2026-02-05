@@ -26,51 +26,56 @@ impl Allocator {
         file_size: usize,
         min_workers: u32,
         slab_size: u32,
-        worker_index: u32,
     ) -> Result<Self, Error> {
         let header = crate::init::create(file, file_size, min_workers, slab_size)?;
+        let worker_index = match unsafe { claim_any_worker_index(header) } {
+            Some(worker_index) => worker_index,
+            None => {
+                #[cfg(not(test))]
+                unsafe {
+                    libc::munmap(header.as_ptr() as *mut libc::c_void, file_size);
+                }
+                return Err(Error::NoAvailableWorkers);
+            }
+        };
 
         // SAFETY: The header is guaranteed to be valid and initialized.
-        unsafe { Allocator::new(header, file_size, worker_index) }
+        Allocator::new(header, file_size, worker_index)
     }
 
     /// Join an existing allocator in the provided file.
-    ///
-    /// # Safety
-    /// - `worker_index` must be uniquely assigned to this worker thread/process.
-    pub unsafe fn join(file: &File, worker_index: u32) -> Result<Self, Error> {
+    /// Picks the first available worker slot.
+    pub fn join(file: &File) -> Result<Self, Error> {
         let (header, file_size) = crate::init::join(file)?;
+        let worker_index = match unsafe { claim_any_worker_index(header) } {
+            Some(worker_index) => worker_index,
+            None => {
+                #[cfg(not(test))]
+                unsafe {
+                    libc::munmap(header.as_ptr() as *mut libc::c_void, file_size);
+                }
+                return Err(Error::NoAvailableWorkers);
+            }
+        };
 
-        // Check if the worker index is valid.
         // SAFETY: The header is guaranteed to be valid and initialized.
-        if worker_index >= unsafe { header.as_ref() }.num_workers {
-            return Err(Error::InvalidWorkerIndex);
-        }
-
-        // SAFETY: The header is guaranteed to be valid and initialized.
-        unsafe { Allocator::new(header, file_size, worker_index) }
+        Allocator::new(header, file_size, worker_index)
     }
 
     /// Creates a new `Allocator` for the given worker index.
     ///
     /// # Safety
     /// - The `header` must point to a valid header of an initialized allocator.
-    unsafe fn new(
-        header: NonNull<Header>,
-        file_size: usize,
-        worker_index: u32,
-    ) -> Result<Self, Error> {
+    fn new(header: NonNull<Header>, file_size: usize, worker_index: u32) -> Result<Self, Error> {
         // SAFETY: The header is assumed to be valid and initialized.
         if worker_index >= unsafe { header.as_ref() }.num_workers {
             return Err(Error::InvalidWorkerIndex);
         }
-        let allocator = Allocator {
+        Ok(Allocator {
             header,
             file_size,
             worker_index,
-        };
-        allocator.claim_worker()?;
-        Ok(allocator)
+        })
     }
 }
 
@@ -95,17 +100,6 @@ impl Drop for Allocator {
 }
 
 impl Allocator {
-    fn claim_worker(&self) -> Result<(), Error> {
-        let claimed = &self.worker_meta().claimed;
-        if claimed
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(Error::WorkerAlreadyClaimed);
-        }
-        Ok(())
-    }
-
     fn release_worker(&self) {
         self.worker_meta().claimed.store(0, Ordering::Release);
     }
@@ -445,20 +439,14 @@ impl Allocator {
         unsafe { WorkerLocalList::new(head, list) }
     }
 
+    fn worker_meta(&self) -> &WorkerLocalListHeads {
+        // SAFETY: The worker index is guaranteed to be valid by the constructor.
+        unsafe { worker_meta_ptr(self.header, self.worker_index).as_ref() }
+    }
+
     fn worker_head(&self, size_index: usize) -> &WorkerLocalListPartialFullHeads {
         // SAFETY: The size index is guaranteed to be valid by the caller.
         &self.worker_meta().heads[size_index]
-    }
-
-    fn worker_meta(&self) -> &WorkerLocalListHeads {
-        // SAFETY: The header is assumed to be valid and initialized.
-        let all_workers_heads = unsafe {
-            self.header
-                .byte_add(offset_of!(Header, worker_local_list_heads))
-                .cast::<WorkerLocalListHeads>()
-        };
-        // SAFETY: The worker index is guaranteed to be valid by the constructor.
-        unsafe { all_workers_heads.add(self.worker_index as usize).as_ref() }
     }
 
     /// Returns an instance of `RemoteFreeList` for the given slab.
@@ -544,6 +532,33 @@ impl Allocator {
     }
 }
 
+unsafe fn worker_meta_ptr(
+    header: NonNull<Header>,
+    worker_index: u32,
+) -> NonNull<WorkerLocalListHeads> {
+    let all_workers_heads = unsafe {
+        header
+            .byte_add(offset_of!(Header, worker_local_list_heads))
+            .cast::<WorkerLocalListHeads>()
+    };
+    // SAFETY: The caller guarantees the worker index is in range.
+    unsafe { all_workers_heads.add(worker_index as usize) }
+}
+
+unsafe fn claim_any_worker_index(header: NonNull<Header>) -> Option<u32> {
+    let num_workers = unsafe { header.as_ref() }.num_workers;
+    for worker_index in 0..num_workers {
+        let claimed = unsafe { &worker_meta_ptr(header, worker_index).as_ref().claimed };
+        if claimed
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Some(worker_index);
+        }
+    }
+    None
+}
+
 struct AllocationIndexes {
     slab_index: u32,
     index_within_slab: u16,
@@ -570,15 +585,15 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
-    fn initialize_for_test(
-        buffer: *mut u8,
-        slab_size: u32,
-        num_workers: u32,
-        worker_index: u32,
-    ) -> Allocator {
+    fn initialize_for_test(buffer: *mut u8, slab_size: u32, num_workers: u32) -> Allocator {
         let file_size = TEST_BUFFER_SIZE;
 
-        let layout = layout::offsets(file_size, slab_size, num_workers);
+        let slab_size_usize = slab_size as usize;
+        let num_slabs_upperbound = (file_size / slab_size_usize).saturating_sub(1) as u32;
+        let mut layout =
+            layout::layout_for_num_slabs(num_workers, slab_size, num_slabs_upperbound);
+        layout.num_slabs =
+            ((file_size - layout.slabs_offset as usize) / slab_size_usize) as u32;
 
         let header = NonNull::new(buffer as *mut Header).unwrap();
         // SAFETY: The header is valid for any byte pattern, and we are initializing it with the
@@ -587,14 +602,14 @@ mod tests {
             initialize::allocator(header, slab_size, num_workers, layout);
         }
 
-        // SAFETY: The header/allocator memory is initialized.
-        unsafe { Allocator::new(header, file_size, worker_index) }.unwrap()
+        let worker_index = unsafe { claim_any_worker_index(header) }.unwrap();
+        Allocator::new(header, file_size, worker_index).unwrap()
     }
 
-    fn join_for_tests(buffer: *mut u8, worker_index: u32) -> Allocator {
+    fn join_for_tests(buffer: *mut u8) -> Allocator {
         let header = NonNull::new(buffer as *mut Header).unwrap();
-        // SAFETY: The header is valid if joining an existing allocator.
-        unsafe { Allocator::new(header, TEST_BUFFER_SIZE, worker_index) }.unwrap()
+        let worker_index = unsafe { claim_any_worker_index(header) }.unwrap();
+        Allocator::new(header, TEST_BUFFER_SIZE, worker_index).unwrap()
     }
 
     #[test]
@@ -602,13 +617,7 @@ mod tests {
         let mut buffer = test_buffer();
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
-        let worker_index = 0;
-        let allocator = initialize_for_test(
-            buffer.as_mut_ptr().cast(),
-            slab_size,
-            num_workers,
-            worker_index,
-        );
+        let allocator = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
 
         let mut allocations = vec![];
 
@@ -649,13 +658,7 @@ mod tests {
         let mut buffer = test_buffer();
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
-        let worker_index = 0;
-        let allocator = initialize_for_test(
-            buffer.as_mut_ptr().cast(),
-            slab_size,
-            num_workers,
-            worker_index,
-        );
+        let allocator = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
 
         let allocation_size = 2048;
         let size_index = size_class_index(allocation_size).unwrap();
@@ -739,13 +742,7 @@ mod tests {
         let mut buffer = test_buffer();
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
-        let worker_index = 0;
-        let allocator = initialize_for_test(
-            buffer.as_mut_ptr().cast(),
-            slab_size,
-            num_workers,
-            worker_index,
-        );
+        let allocator = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
 
         let num_slabs = unsafe { allocator.header.as_ref() }.num_slabs;
         for index in 0..num_slabs {
@@ -762,9 +759,8 @@ mod tests {
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
 
-        let allocator_0 =
-            initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers, 0);
-        let allocator_1 = join_for_tests(buffer.as_mut_ptr().cast(), 1);
+        let allocator_0 = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
+        let allocator_1 = join_for_tests(buffer.as_mut_ptr().cast());
 
         let allocation_size = 2048;
         let size_index = size_class_index(allocation_size).unwrap();
