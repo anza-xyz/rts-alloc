@@ -20,17 +20,15 @@ pub struct Allocator {
 
 impl Allocator {
     /// Create a new `Allocator` in the provided file with the given parameters.
+    /// `min_workers` is the minimum number of workers to support.
     pub fn create(
         file: &File,
         file_size: usize,
-        num_workers: u32,
+        min_workers: u32,
         slab_size: u32,
         worker_index: u32,
     ) -> Result<Self, Error> {
-        if worker_index >= num_workers {
-            return Err(Error::InvalidWorkerIndex);
-        }
-        let header = crate::init::create(file, file_size, num_workers, slab_size)?;
+        let header = crate::init::create(file, file_size, min_workers, slab_size)?;
 
         // SAFETY: The header is guaranteed to be valid and initialized.
         unsafe { Allocator::new(header, file_size, worker_index) }

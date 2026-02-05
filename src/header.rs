@@ -102,6 +102,54 @@ pub mod layout {
         pub slabs_offset: u32,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct WorkerLimits {
+        pub meta_slabs: u32,
+        pub usable_slabs: u32,
+        pub max_workers: u32,
+    }
+
+    pub fn max_workers(file_size: usize, slab_size: u32, min_workers: u32) -> Option<WorkerLimits> {
+        if slab_size == 0 {
+            return None;
+        }
+        let slab_size_usize = slab_size as usize;
+        let total_slabs = (file_size / slab_size_usize) as u32;
+        if total_slabs == 0 {
+            return None;
+        }
+
+        let mut meta_slabs: u32 = 1;
+        loop {
+            let usable_slabs = total_slabs.checked_sub(meta_slabs)?;
+            if usable_slabs == 0 {
+                return None;
+            }
+            let base_layout = layout_for(0, slab_size, usable_slabs);
+            let base_meta_bytes = base_layout.slabs_offset as usize;
+
+            let needed_meta_slabs = base_meta_bytes.div_ceil(slab_size_usize) as u32;
+            if needed_meta_slabs > meta_slabs {
+                meta_slabs = needed_meta_slabs;
+                continue;
+            }
+
+            let slack_bytes = meta_slabs as usize * slab_size_usize - base_meta_bytes;
+            let per_worker_bytes = core::mem::size_of::<WorkerLocalListHeads>();
+            let max_workers = (slack_bytes / per_worker_bytes) as u32;
+            if max_workers < min_workers {
+                meta_slabs = meta_slabs.saturating_add(1);
+                continue;
+            }
+
+            return Some(WorkerLimits {
+                meta_slabs,
+                usable_slabs,
+                max_workers,
+            });
+        }
+    }
+
     fn layout_for(num_workers: u32, slab_size: u32, num_slabs: u32) -> AllocatorLayout {
         let mut offset = header_size();
         offset += worker_local_list_heads_size(num_workers);
@@ -125,18 +173,12 @@ pub mod layout {
         }
     }
 
-    pub fn min_file_size(num_workers: u32, slab_size: u32) -> usize {
-        let layout = layout_for(num_workers, slab_size, 1);
-        layout.slabs_offset as usize + slab_size as usize
-    }
-
-    pub fn offsets(file_size: usize, slab_size: u32, num_workers: u32) -> AllocatorLayout {
-        // Get an upperbound on number of slabs:
-        // At least 1 slab slot is taken for the header and meta information.
-        let num_slabs_upperbound = ((file_size / slab_size as usize) - 1) as u32;
-        let mut layout = layout_for(num_workers, slab_size, num_slabs_upperbound);
-        layout.num_slabs = ((file_size - layout.slabs_offset as usize) / slab_size as usize) as u32;
-        layout
+    pub fn layout_for_num_slabs(
+        num_workers: u32,
+        slab_size: u32,
+        num_slabs: u32,
+    ) -> AllocatorLayout {
+        layout_for(num_workers, slab_size, num_slabs)
     }
 
     /// The size of the header in bytes.

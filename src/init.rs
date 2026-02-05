@@ -18,20 +18,24 @@ use std::{
 
 /// Create and initialize the allocator's backing file.
 /// Returns pointer to header.
+/// `min_workers` is the minimum number of workers to support.
 pub fn create(
     file: &File,
     file_size: usize,
-    num_workers: u32,
+    min_workers: u32,
     slab_size: u32,
 ) -> Result<NonNull<Header>, Error> {
-    if num_workers == 0 {
+    if min_workers == 0 {
         return Err(Error::InvalidNumWorkers);
     }
     verify_slab_size(slab_size)?;
-    verify_allocator_size(file_size, slab_size, num_workers)?;
+    verify_total_slabs(file_size, slab_size)?;
+    let limits =
+        layout::max_workers(file_size, slab_size, min_workers).ok_or(Error::InvalidFileSize)?;
 
     // Given parameters, calculate layout.
-    let layout = layout::offsets(file_size, slab_size, num_workers);
+    let num_workers = limits.max_workers;
+    let layout = layout::layout_for_num_slabs(num_workers, slab_size, limits.usable_slabs);
     if layout.num_slabs == 0 {
         return Err(Error::InvalidFileSize);
     }
@@ -73,8 +77,14 @@ pub fn join(file: &File) -> Result<(NonNull<Header>, usize), Error> {
             return Err(Error::InvalidHeader);
         }
         verify_slab_size(header.slab_size)?;
-        verify_allocator_size(file_size, header.slab_size, header.num_workers)?;
-        let expected_layout = layout::offsets(file_size, header.slab_size, header.num_workers);
+        verify_total_slabs(file_size, header.slab_size)?;
+        let limits = layout::max_workers(file_size, header.slab_size, header.num_workers)
+            .ok_or(Error::InvalidHeader)?;
+        if limits.max_workers != header.num_workers {
+            return Err(Error::InvalidHeader);
+        }
+        let expected_layout =
+            layout::layout_for_num_slabs(header.num_workers, header.slab_size, limits.usable_slabs);
 
         if header.num_slabs != expected_layout.num_slabs
             || header.free_list_elements_offset != expected_layout.free_list_elements_offset
@@ -107,9 +117,8 @@ fn verify_slab_size(slab_size: u32) -> Result<(), Error> {
     Ok(())
 }
 
-fn verify_allocator_size(file_size: usize, slab_size: u32, num_workers: u32) -> Result<(), Error> {
-    let min_file_size = layout::min_file_size(num_workers, slab_size);
-    if file_size < min_file_size {
+fn verify_total_slabs(file_size: usize, slab_size: u32) -> Result<(), Error> {
+    if file_size / slab_size as usize > u32::MAX as usize {
         return Err(Error::InvalidFileSize);
     }
 
