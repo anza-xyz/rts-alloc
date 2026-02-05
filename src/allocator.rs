@@ -66,11 +66,13 @@ impl Allocator {
         if worker_index >= unsafe { header.as_ref() }.num_workers {
             return Err(Error::InvalidWorkerIndex);
         }
-        Ok(Allocator {
+        let allocator = Allocator {
             header,
             file_size,
             worker_index,
-        })
+        };
+        allocator.claim_worker()?;
+        Ok(allocator)
     }
 }
 
@@ -78,6 +80,7 @@ unsafe impl Send for Allocator {}
 
 impl Drop for Allocator {
     fn drop(&mut self) {
+        self.release_worker();
         #[cfg(test)]
         {
             // In tests, we do not mmap.
@@ -94,6 +97,21 @@ impl Drop for Allocator {
 }
 
 impl Allocator {
+    fn claim_worker(&self) -> Result<(), Error> {
+        let claimed = &self.worker_meta().claimed;
+        if claimed
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(Error::WorkerAlreadyClaimed);
+        }
+        Ok(())
+    }
+
+    fn release_worker(&self) {
+        self.worker_meta().claimed.store(0, Ordering::Release);
+    }
+
     /// Allocates a block of memory of the given size.
     /// If the size is larger than the maximum size class, returns `None`.
     /// If the allocation fails, returns `None`.
@@ -430,6 +448,11 @@ impl Allocator {
     }
 
     fn worker_head(&self, size_index: usize) -> &WorkerLocalListPartialFullHeads {
+        // SAFETY: The size index is guaranteed to be valid by the caller.
+        &self.worker_meta().heads[size_index]
+    }
+
+    fn worker_meta(&self) -> &WorkerLocalListHeads {
         // SAFETY: The header is assumed to be valid and initialized.
         let all_workers_heads = unsafe {
             self.header
@@ -437,16 +460,7 @@ impl Allocator {
                 .cast::<WorkerLocalListHeads>()
         };
         // SAFETY: The worker index is guaranteed to be valid by the constructor.
-        let worker_heads = unsafe { all_workers_heads.add(self.worker_index as usize) };
-        // SAFETY: The size index is guaranteed to be valid by the caller.
-        let worker_head = unsafe {
-            worker_heads
-                .cast::<WorkerLocalListPartialFullHeads>()
-                .add(size_index)
-                .as_ref()
-        };
-
-        worker_head
+        unsafe { all_workers_heads.add(self.worker_index as usize).as_ref() }
     }
 
     /// Returns an instance of `RemoteFreeList` for the given slab.

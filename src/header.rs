@@ -1,16 +1,18 @@
-use crate::{
-    cache_aligned::{CacheAligned, CacheAlignedU32},
-    size_classes::NUM_SIZE_CLASSES,
-};
-use core::sync::atomic::AtomicU32;
+use crate::{cache_aligned::CacheAlignedU32, size_classes::NUM_SIZE_CLASSES};
+use core::sync::atomic::{AtomicU32, AtomicU8};
 
 pub const MAGIC: u64 = 0x727473616c6f63; // "rtsaloc"
 pub const VERSION: u32 = 1;
 
-pub type WorkerLocalListHeads = CacheAligned<[WorkerLocalListPartialFullHeads; NUM_SIZE_CLASSES]>;
 pub struct WorkerLocalListPartialFullHeads {
     pub partial: AtomicU32,
     pub full: AtomicU32,
+}
+
+#[repr(C, align(64))]
+pub struct WorkerLocalListHeads {
+    pub claimed: AtomicU8,
+    pub heads: [WorkerLocalListPartialFullHeads; NUM_SIZE_CLASSES],
 }
 
 #[repr(C)]

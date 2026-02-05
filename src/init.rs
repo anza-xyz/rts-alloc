@@ -137,10 +137,7 @@ fn open_mmap(file: &File, size: usize) -> Result<*mut c_void, Error> {
 
 pub mod initialize {
     use super::*;
-    use crate::{
-        header::WorkerLocalListPartialFullHeads, size_classes::NUM_SIZE_CLASSES,
-        slab_meta::SlabMeta,
-    };
+    use crate::slab_meta::SlabMeta;
 
     /// Initialize the allocator's backing memory.
     ///
@@ -211,14 +208,9 @@ pub mod initialize {
                 .cast::<WorkerLocalListHeads>()
         };
         for i in 0..num_workers {
-            let worker_head = unsafe {
-                all_workers_heads
-                    .add(i as usize)
-                    .cast::<[WorkerLocalListPartialFullHeads; NUM_SIZE_CLASSES]>()
-                    .as_mut()
-            };
-
-            for worker_partial_full in worker_head.iter_mut() {
+            let worker_head = unsafe { all_workers_heads.add(i as usize).as_mut() };
+            worker_head.claimed.store(0, Ordering::Release);
+            for worker_partial_full in worker_head.heads.iter_mut() {
                 worker_partial_full
                     .partial
                     .store(NULL_U32, Ordering::Release);
