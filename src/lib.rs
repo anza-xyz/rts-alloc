@@ -15,4 +15,4 @@ mod size_classes;
 mod slab_meta;
 mod worker_local_list;
 
-pub use allocator::Allocator;
+pub use allocator::{Allocator, FreeOnlyAllocator};
