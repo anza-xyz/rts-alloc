@@ -8,4 +8,4 @@ repository = "https://github.com/anza-xyz/rts-alloc"
 authors = ["Anza Maintainers <maintainers@anza.xyz>"]
 
 [target."cfg(unix)".dependencies]
-libc = { version = "0.2.174" }
+libc = { version = "0.2.181" }
