@@ -942,4 +942,38 @@ mod tests {
         };
         assert_eq!(allocation_indexes.slab_index, slab_index);
     }
+
+    #[test]
+    fn test_free_only_allocator() {
+        let mut buffer = test_buffer();
+        let slab_size = 65536; // 64 KiB
+        let num_workers = 4;
+        let allocator = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
+        let free_only_allocator = FreeOnlyAllocator {
+            base: AllocatorBase {
+                header: allocator.base.header,
+                file_size: TEST_BUFFER_CAPACITY,
+            },
+        };
+
+        let allocation_size = 2048;
+        let allocation = allocator.allocate(allocation_size).unwrap();
+
+        let allocation_indexes =
+            unsafe { allocator.find_allocation_indexes(allocator.offset(allocation)) };
+
+        // SAFETY: allocation is a valid pointer allocated by the allocator.
+        unsafe {
+            free_only_allocator.free(allocation);
+        }
+
+        // Index should be in the remote free list for the slab.
+        assert_eq!(
+            unsafe { allocator.remote_free_list(allocation_indexes.slab_index) }
+                .iterate()
+                .next()
+                .unwrap(),
+            allocation_indexes.index_within_slab
+        );
+    }
 }
