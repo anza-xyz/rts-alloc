@@ -664,20 +664,7 @@ impl Allocator {
     /// # Safety
     /// - The `slab_index` must be a valid index for the slabs.
     unsafe fn slab(&self, slab_index: u32) -> NonNull<u8> {
-        let (slab_size, offset) = {
-            // SAFETY: The header is assumed to be valid and initialized.
-            let header = unsafe { self.base.header.as_ref() };
-            (header.slab_size, header.slabs_offset)
-        };
-        // SAFETY: The header is guaranteed to be valid and initialized.
-        // The slabs are laid out sequentially after the free stacks.
-        unsafe {
-            self.base
-                .header
-                .byte_add(offset as usize)
-                .byte_add(slab_index as usize * slab_size as usize)
-                .cast()
-        }
+        self.base.slab(slab_index)
     }
 }
 
