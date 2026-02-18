@@ -182,6 +182,9 @@ impl Allocator {
             let slab = unsafe { self.slab(slab_index) };
             // SAFETY: The `size_index` is guaranteed to be valid by the caller.
             let size = unsafe { size_class(size_index) };
+            self.worker_meta()
+                .outstanding_allocation_bytes
+                .fetch_add(size as u64, Ordering::Relaxed);
             slab.byte_add(index_within_slab as usize * size as usize)
         })
     }
@@ -238,13 +241,18 @@ impl Allocator {
                 .assigned_worker
                 .load(Ordering::Acquire)
         {
-            self.local_free(allocation_indexes);
+            // SAFETY: The allocation indexes are valid and come from allocator-owned memory.
+            let (size_index, size) = unsafe { self.slab_size_class(allocation_indexes.slab_index) };
+            self.worker_meta()
+                .outstanding_allocation_bytes
+                .fetch_sub(size as u64, Ordering::Relaxed);
+            self.local_free_with_size_index(allocation_indexes, size_index);
         } else {
             self.remote_free(allocation_indexes);
         }
     }
 
-    fn local_free(&self, allocation_indexes: AllocationIndexes) {
+    fn local_free_with_size_index(&self, allocation_indexes: AllocationIndexes, size_index: usize) {
         // SAFETY: The allocation indexes are guaranteed to be valid by the caller.
         let (was_full, is_empty) = unsafe {
             let mut free_stack = self.slab_free_stack(allocation_indexes.slab_index);
@@ -263,9 +271,6 @@ impl Allocator {
                 unreachable!("slab can only contain one allocation - this is not allowed");
             }
             (true, false) => {
-                let size_index = unsafe { self.slab_meta(allocation_indexes.slab_index).as_ref() }
-                    .size_class_index
-                    .load(Ordering::Relaxed);
                 // The slab was full and is now partially full. It must be moved
                 // from the worker's full list to the worker's partial list.
                 // SAFETY: The allocation indexes are guaranteed to be valid by the caller.
@@ -280,9 +285,6 @@ impl Allocator {
                 }
             }
             (false, true) => {
-                let size_index = unsafe { self.slab_meta(allocation_indexes.slab_index).as_ref() }
-                    .size_class_index
-                    .load(Ordering::Relaxed);
                 // The slab was partially full and is now empty.
                 // It must be moved from the worker's partial list to the global free list.
                 // SAFETY: The allocation indexes are guaranteed to be valid by the caller.
@@ -529,6 +531,12 @@ impl AllocatorBase {
 }
 
 impl Allocator {
+    pub fn outstanding_allocation_bytes(&self) -> u64 {
+        self.worker_meta()
+            .outstanding_allocation_bytes
+            .load(Ordering::Relaxed)
+    }
+
     /// Frees all items in remote free lists.
     pub fn clean_remote_free_lists(&self) {
         // Do partial slabs before full slabs, because the act of freeing within
@@ -548,13 +556,25 @@ impl Allocator {
     /// Frees all items in the remote free list for the given worker local list.
     fn clean_remote_free_lists_for_list(&self, worker_local_list: WorkerLocalList) {
         for slab_index in worker_local_list.iterate() {
+            // SAFETY: Slab indices come from worker-local lists and are valid.
+            let (size_index, size) = unsafe { self.slab_size_class(slab_index) };
+            let mut drained_items = 0u64;
             // SAFETY: The slab index is guaranteed to be valid by the iterator.
             let remote_free_list = unsafe { self.remote_free_list(slab_index) };
             for index_within_slab in remote_free_list.drain() {
-                self.local_free(AllocationIndexes {
-                    slab_index,
-                    index_within_slab,
-                })
+                self.local_free_with_size_index(
+                    AllocationIndexes {
+                        slab_index,
+                        index_within_slab,
+                    },
+                    size_index,
+                );
+                drained_items += 1;
+            }
+            if drained_items != 0 {
+                self.worker_meta()
+                    .outstanding_allocation_bytes
+                    .fetch_sub(drained_items * size as u64, Ordering::Relaxed);
             }
         }
     }
@@ -615,6 +635,19 @@ impl Allocator {
     fn worker_head(&self, size_index: usize) -> &WorkerLocalListPartialFullHeads {
         // SAFETY: The size index is guaranteed to be valid by the caller.
         &self.worker_meta().heads[size_index]
+    }
+
+    /// Returns the slab's assigned size class index and class size in bytes.
+    ///
+    /// # Safety
+    /// - `slab_index` must be a valid slab index.
+    unsafe fn slab_size_class(&self, slab_index: u32) -> (usize, u32) {
+        let size_index = unsafe { self.slab_meta(slab_index).as_ref() }
+            .size_class_index
+            .load(Ordering::Relaxed);
+        // SAFETY: The slab meta stores a valid size class index while assigned.
+        let size = unsafe { size_class(size_index) };
+        (size_index, size)
     }
 
     /// Returns an instance of `RemoteFreeList` for the given slab.
@@ -752,17 +785,29 @@ mod tests {
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
         let allocator = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
+        assert_eq!(allocator.outstanding_allocation_bytes(), 0);
 
         let mut allocations = vec![];
+        let mut total_allocated_bytes = 0u64;
 
-        for size_class in SIZE_CLASSES[..NUM_SIZE_CLASSES - 1].iter() {
-            for size in [size_class - 1, *size_class, size_class + 1] {
+        for class_size in SIZE_CLASSES[..NUM_SIZE_CLASSES - 1].iter() {
+            for size in [class_size - 1, *class_size, class_size + 1] {
                 allocations.push(allocator.allocate(size).unwrap());
+                total_allocated_bytes += size_class_index(size)
+                    .map(|i| unsafe { size_class(i) as u64 })
+                    .unwrap();
             }
         }
         for size in [MAX_SIZE - 1, MAX_SIZE] {
             allocations.push(allocator.allocate(size).unwrap());
+            total_allocated_bytes += size_class_index(size)
+                .map(|i| unsafe { size_class(i) as u64 })
+                .unwrap();
         }
+        assert_eq!(
+            allocator.outstanding_allocation_bytes(),
+            total_allocated_bytes
+        );
         assert!(allocator.allocate(MAX_SIZE + 1).is_none());
 
         // The worker should have local lists for all size classes.
@@ -778,6 +823,7 @@ mod tests {
                 allocator.free(ptr);
             }
         }
+        assert_eq!(allocator.outstanding_allocation_bytes(), 0);
 
         // The worker local lists should be empty after freeing.
         for size_index in 0..NUM_SIZE_CLASSES {
@@ -925,6 +971,10 @@ mod tests {
                 allocator_1.free(ptr);
             }
         }
+        assert_eq!(
+            allocator_0.outstanding_allocation_bytes(),
+            allocations_per_slab as u64 * allocation_size as u64
+        );
 
         // Allocator 0 can NOT allocate in the same slab.
         let different_slab_allocation = allocator_0.allocate(allocation_size).unwrap();
@@ -936,6 +986,7 @@ mod tests {
 
         // If we clean the remote free lists, the next allocation should succeed in the same slab.
         allocator_0.clean_remote_free_lists();
+        assert_eq!(allocator_0.outstanding_allocation_bytes(), 0);
         let same_slab_allocation = allocator_0.allocate(allocation_size).unwrap();
         let allocation_indexes = unsafe {
             allocator_0.find_allocation_indexes(allocator_0.offset(same_slab_allocation))

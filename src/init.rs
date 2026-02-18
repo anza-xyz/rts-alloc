@@ -219,6 +219,9 @@ pub mod initialize {
         for i in 0..num_workers {
             let worker_head = unsafe { all_workers_heads.add(i as usize).as_mut() };
             worker_head.claimed.store(0, Ordering::Release);
+            worker_head
+                .outstanding_allocation_bytes
+                .store(0, Ordering::Release);
             for worker_partial_full in worker_head.heads.iter_mut() {
                 worker_partial_full
                     .partial
