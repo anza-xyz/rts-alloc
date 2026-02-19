@@ -29,7 +29,11 @@ struct AllocatorBase {
 impl Allocator {
     /// Create a new `Allocator` in the provided file with the given parameters.
     /// `min_workers` is the minimum number of workers to support.
-    pub fn create(
+    ///
+    /// # Safety
+    /// - `create` must only be called once for a given file. Subsequent calls
+    ///   with the same file must use `join`.
+    pub unsafe fn create(
         file: &File,
         file_size: usize,
         min_workers: u32,
