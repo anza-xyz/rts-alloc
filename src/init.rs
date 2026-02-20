@@ -8,7 +8,6 @@ use crate::{
     linked_list_node::LinkedListNode,
     size_classes::{MAX_SIZE, MIN_SIZE},
 };
-use core::ffi::c_void;
 use std::{fs::File, mem::offset_of, ptr::NonNull, sync::atomic::Ordering};
 
 /// Create and initialize the allocator's backing file.
@@ -42,7 +41,7 @@ pub fn create(
     file.set_len(file_size as u64)?;
 
     // Map the file into memory.
-    let mmap = open_mmap(file, file_size)?;
+    let mmap = crate::memory_map::map_file(file, file_size)?;
 
     // Initialize the header.
     // SAFETY: The header is valid for any byte pattern.
@@ -58,7 +57,7 @@ pub fn create(
 /// Join an existing allocator, returning a pointer to the header and size.
 pub fn join(file: &File) -> Result<(NonNull<Header>, usize), Error> {
     let file_size = file.metadata()?.len() as usize;
-    let mmap = open_mmap(file, file_size)?;
+    let mmap = crate::memory_map::map_file(file, file_size)?;
     let header = NonNull::new(mmap.cast::<Header>()).expect("mmap already checked for null");
 
     // Verify header
@@ -118,10 +117,6 @@ fn verify_total_slabs(file_size: usize, slab_size: u32) -> Result<(), Error> {
     }
 
     Ok(())
-}
-
-fn open_mmap(file: &File, size: usize) -> Result<*mut c_void, Error> {
-    crate::memory_map::map_file(file, size)
 }
 
 pub mod initialize {
