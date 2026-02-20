@@ -8,13 +8,8 @@ use crate::{
     linked_list_node::LinkedListNode,
     size_classes::{MAX_SIZE, MIN_SIZE},
 };
-use std::{
-    fs::File,
-    mem::offset_of,
-    os::{fd::AsRawFd, raw::c_void},
-    ptr::NonNull,
-    sync::atomic::Ordering,
-};
+use core::ffi::c_void;
+use std::{fs::File, mem::offset_of, ptr::NonNull, sync::atomic::Ordering};
 
 /// Create and initialize the allocator's backing file.
 /// Returns pointer to header.
@@ -126,22 +121,7 @@ fn verify_total_slabs(file_size: usize, slab_size: u32) -> Result<(), Error> {
 }
 
 fn open_mmap(file: &File, size: usize) -> Result<*mut c_void, Error> {
-    let mmap = unsafe {
-        libc::mmap(
-            core::ptr::null_mut(),
-            size,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            file.as_raw_fd(),
-            0,
-        )
-    };
-
-    if mmap == libc::MAP_FAILED {
-        return Err(Error::MmapError(std::io::Error::last_os_error()));
-    }
-
-    Ok(mmap)
+    crate::memory_map::map_file(file, size)
 }
 
 pub mod initialize {

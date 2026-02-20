@@ -44,9 +44,7 @@ impl Allocator {
             Some(worker_index) => worker_index,
             None => {
                 #[cfg(not(test))]
-                unsafe {
-                    libc::munmap(header.as_ptr() as *mut libc::c_void, file_size);
-                }
+                let _ = crate::memory_map::unmap_file(header.as_ptr().cast(), file_size);
                 return Err(Error::NoAvailableWorkers);
             }
         };
@@ -63,9 +61,7 @@ impl Allocator {
             Some(worker_index) => worker_index,
             None => {
                 #[cfg(not(test))]
-                unsafe {
-                    libc::munmap(header.as_ptr() as *mut libc::c_void, file_size);
-                }
+                let _ = crate::memory_map::unmap_file(header.as_ptr().cast(), file_size);
                 return Err(Error::NoAvailableWorkers);
             }
         };
@@ -405,9 +401,7 @@ impl AllocatorBase {
         #[allow(unreachable_code)]
         // SAFETY: The header is guaranteed to be valid and initialized.
         //         And outside of tests the allocator is mmaped.
-        unsafe {
-            libc::munmap(self.header.as_ptr() as *mut libc::c_void, self.file_size);
-        }
+        let _ = crate::memory_map::unmap_file(self.header.as_ptr().cast(), self.file_size);
     }
 
     /// Find the offset given a pointer.

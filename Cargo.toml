@@ -9,3 +9,11 @@ authors = ["Anza Maintainers <maintainers@anza.xyz>"]
 
 [target."cfg(unix)".dependencies]
 libc = { version = "0.2.174" }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Memory",
+] }
