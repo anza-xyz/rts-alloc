@@ -43,7 +43,6 @@ impl Allocator {
         let worker_index = match unsafe { claim_any_worker_index(header) } {
             Some(worker_index) => worker_index,
             None => {
-                #[cfg(not(test))]
                 let _ = crate::memory_map::unmap_file(header.as_ptr().cast(), file_size);
                 return Err(Error::NoAvailableWorkers);
             }
@@ -60,7 +59,6 @@ impl Allocator {
         let worker_index = match unsafe { claim_any_worker_index(header) } {
             Some(worker_index) => worker_index,
             None => {
-                #[cfg(not(test))]
                 let _ = crate::memory_map::unmap_file(header.as_ptr().cast(), file_size);
                 return Err(Error::NoAvailableWorkers);
             }
@@ -392,15 +390,7 @@ impl AllocatorBase {
     }
 
     fn unmap(&self) {
-        #[cfg(test)]
-        {
-            // In tests, we do not mmap.
-            return;
-        }
-
-        #[allow(unreachable_code)]
         // SAFETY: The header is guaranteed to be valid and initialized.
-        //         And outside of tests the allocator is mmaped.
         let _ = crate::memory_map::unmap_file(self.header.as_ptr().cast(), self.file_size);
     }
 
@@ -734,55 +724,61 @@ struct AllocationIndexes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        header::layout,
-        init::initialize,
-        size_classes::{MAX_SIZE, SIZE_CLASSES},
-    };
+    use crate::size_classes::{MAX_SIZE, SIZE_CLASSES};
 
-    #[repr(C, align(4096))]
-    struct DummyTypeForAlignment([u8; 4096]);
-    const TEST_BUFFER_SIZE: usize = 64 * 1024 * 1024; // 1 MiB
-    const TEST_BUFFER_CAPACITY: usize =
-        TEST_BUFFER_SIZE / core::mem::size_of::<DummyTypeForAlignment>();
+    const TEST_BUFFER_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
 
-    fn test_buffer() -> Vec<DummyTypeForAlignment> {
-        (0..TEST_BUFFER_CAPACITY)
-            .map(|_| DummyTypeForAlignment([0; 4096]))
-            .collect::<Vec<_>>()
-    }
+    fn create_temp_shmem_file() -> Result<File, Error> {
+        use std::fs::OpenOptions;
+        use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn initialize_for_test(buffer: *mut u8, slab_size: u32, num_workers: u32) -> Allocator {
-        let file_size = TEST_BUFFER_SIZE;
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let temp_dir = std::env::temp_dir();
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = temp_dir.join(format!("rts-alloc-{n}.tmp"));
 
-        let slab_size_usize = slab_size as usize;
-        let num_slabs_upperbound = (file_size / slab_size_usize).saturating_sub(1) as u32;
-        let mut layout = layout::layout_for_num_slabs(num_workers, slab_size, num_slabs_upperbound);
-        layout.num_slabs = ((file_size - layout.slabs_offset as usize) / slab_size_usize) as u32;
+        let mut open_options = OpenOptions::new();
+        open_options.read(true).write(true).create_new(true);
 
-        let header = NonNull::new(buffer as *mut Header).unwrap();
-        // SAFETY: The header is valid for any byte pattern, and we are initializing it with the
-        //         allocator.
-        unsafe {
-            initialize::allocator(header, slab_size, num_workers, layout);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE,
+            };
+
+            open_options
+                .attributes(FILE_ATTRIBUTE_TEMPORARY)
+                .custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
         }
 
-        let worker_index = unsafe { claim_any_worker_index(header) }.unwrap();
-        Allocator::new(header, file_size, worker_index).unwrap()
+        let open_result = open_options.open(&path);
+
+        match open_result {
+            Ok(file) => {
+                #[cfg(unix)]
+                {
+                    std::fs::remove_file(&path)?;
+                }
+                Ok(file)
+            }
+            Err(err) => Err(Error::IoError(err)),
+        }
     }
 
-    fn join_for_tests(buffer: *mut u8) -> Allocator {
-        let header = NonNull::new(buffer as *mut Header).unwrap();
-        let worker_index = unsafe { claim_any_worker_index(header) }.unwrap();
-        Allocator::new(header, TEST_BUFFER_SIZE, worker_index).unwrap()
+    fn initialize_for_test(slab_size: u32, num_workers: u32) -> (File, Allocator) {
+        let file = create_temp_shmem_file().unwrap();
+        // SAFETY: Test helper creates allocator from a fresh temp shared-memory file.
+        let allocator =
+            unsafe { Allocator::create(&file, TEST_BUFFER_SIZE, num_workers, slab_size).unwrap() };
+        (file, allocator)
     }
 
     #[test]
     fn test_allocator() {
-        let mut buffer = test_buffer();
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
-        let allocator = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
+        let (_file, allocator) = initialize_for_test(slab_size, num_workers);
         assert_eq!(allocator.outstanding_allocation_bytes(), 0);
 
         let mut allocations = vec![];
@@ -833,10 +829,9 @@ mod tests {
 
     #[test]
     fn test_slab_list_transitions() {
-        let mut buffer = test_buffer();
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
-        let allocator = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
+        let (_file, allocator) = initialize_for_test(slab_size, num_workers);
 
         let allocation_size = 2048;
         let size_index = size_class_index(allocation_size).unwrap();
@@ -917,10 +912,9 @@ mod tests {
 
     #[test]
     fn test_out_of_slabs() {
-        let mut buffer = test_buffer();
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
-        let allocator = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
+        let (_file, allocator) = initialize_for_test(slab_size, num_workers);
 
         let num_slabs = unsafe { allocator.base.header.as_ref() }.num_slabs;
         for index in 0..num_slabs {
@@ -933,12 +927,11 @@ mod tests {
 
     #[test]
     fn test_remote_free_lists() {
-        let mut buffer = test_buffer();
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
-
-        let allocator_0 = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
-        let allocator_1 = join_for_tests(buffer.as_mut_ptr().cast());
+        let (file, allocator_0) = initialize_for_test(slab_size, num_workers);
+        let file_for_join = file.try_clone().unwrap();
+        let allocator_1 = Allocator::join(&file_for_join).unwrap();
 
         let allocation_size = 2048;
         let size_index = size_class_index(allocation_size).unwrap();
@@ -966,7 +959,8 @@ mod tests {
         // Free the allocations to the remote free list.
         for ptr in allocations {
             unsafe {
-                allocator_1.free(ptr);
+                let offset = allocator_0.offset(ptr);
+                allocator_1.free_offset(offset);
             }
         }
         assert_eq!(
@@ -994,16 +988,11 @@ mod tests {
 
     #[test]
     fn test_free_only_allocator() {
-        let mut buffer = test_buffer();
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
-        let allocator = initialize_for_test(buffer.as_mut_ptr().cast(), slab_size, num_workers);
-        let free_only_allocator = FreeOnlyAllocator {
-            base: AllocatorBase {
-                header: allocator.base.header,
-                file_size: TEST_BUFFER_CAPACITY,
-            },
-        };
+        let (file, allocator) = initialize_for_test(slab_size, num_workers);
+        let file_for_join = file.try_clone().unwrap();
+        let free_only_allocator = FreeOnlyAllocator::join(&file_for_join).unwrap();
 
         let allocation_size = 2048;
         let allocation = allocator.allocate(allocation_size).unwrap();
@@ -1013,7 +1002,8 @@ mod tests {
 
         // SAFETY: allocation is a valid pointer allocated by the allocator.
         unsafe {
-            free_only_allocator.free(allocation);
+            let offset = allocator.offset(allocation);
+            free_only_allocator.free_offset(offset);
         }
 
         // Index should be in the remote free list for the slab.
