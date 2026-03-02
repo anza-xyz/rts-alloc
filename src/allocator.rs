@@ -11,6 +11,7 @@ use crate::{error::Error, header::Header, size_classes::size_class_index};
 use core::mem::offset_of;
 use core::ptr::NonNull;
 use std::fs::File;
+use std::sync::Arc;
 
 pub struct Allocator {
     base: AllocatorBase,
@@ -21,9 +22,29 @@ pub struct FreeOnlyAllocator {
     base: AllocatorBase,
 }
 
-struct AllocatorBase {
+struct MappedRegion {
     header: NonNull<Header>,
     file_size: usize,
+}
+
+impl Drop for MappedRegion {
+    fn drop(&mut self) {
+        // SAFETY: The mapped region was created by `map_file` and is valid until drop.
+        let _ = crate::memory_map::unmap_file(self.header.as_ptr().cast(), self.file_size);
+    }
+}
+
+// SAFETY: `MappedRegion` is an immutable handle to a shared mapping. The backing
+// memory is process-shared and thread-safe access is enforced by allocator logic
+// and atomics in shared metadata; transferring or sharing this handle across
+// threads does not violate aliasing or thread-safety guarantees.
+unsafe impl Send for MappedRegion {}
+// SAFETY: See rationale above for `Send`.
+unsafe impl Sync for MappedRegion {}
+
+#[derive(Clone)]
+struct AllocatorBase {
+    region: Arc<MappedRegion>,
 }
 
 impl Allocator {
@@ -40,47 +61,52 @@ impl Allocator {
         slab_size: u32,
     ) -> Result<Self, Error> {
         let header = crate::init::create(file, file_size, min_workers, slab_size)?;
-        let worker_index = match unsafe { claim_any_worker_index(header) } {
+        let base = AllocatorBase::from_mapping(header, file_size);
+        let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
             Some(worker_index) => worker_index,
-            None => {
-                let _ = crate::memory_map::unmap_file(header.as_ptr().cast(), file_size);
-                return Err(Error::NoAvailableWorkers);
-            }
+            None => return Err(Error::NoAvailableWorkers),
         };
 
         // SAFETY: The header is guaranteed to be valid and initialized.
-        Allocator::new(header, file_size, worker_index)
+        Allocator::new(base, worker_index)
     }
 
     /// Join an existing allocator in the provided file.
     /// Picks the first available worker slot.
     pub fn join(file: &File) -> Result<Self, Error> {
         let (header, file_size) = crate::init::join(file)?;
-        let worker_index = match unsafe { claim_any_worker_index(header) } {
+        let base = AllocatorBase::from_mapping(header, file_size);
+        let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
             Some(worker_index) => worker_index,
-            None => {
-                let _ = crate::memory_map::unmap_file(header.as_ptr().cast(), file_size);
-                return Err(Error::NoAvailableWorkers);
-            }
+            None => return Err(Error::NoAvailableWorkers),
         };
 
         // SAFETY: The header is guaranteed to be valid and initialized.
-        Allocator::new(header, file_size, worker_index)
+        Allocator::new(base, worker_index)
+    }
+
+    /// Join an existing allocator using the same in-process mapping.
+    /// Picks the first available worker slot.
+    pub fn join_from_existing(existing: &Allocator) -> Result<Self, Error> {
+        let base = existing.base.clone();
+        let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
+            Some(worker_index) => worker_index,
+            None => return Err(Error::NoAvailableWorkers),
+        };
+        // SAFETY: The header is guaranteed to be valid and initialized.
+        Allocator::new(base, worker_index)
     }
 
     /// Creates a new `Allocator` for the given worker index.
     ///
     /// # Safety
     /// - The `header` must point to a valid header of an initialized allocator.
-    fn new(header: NonNull<Header>, file_size: usize, worker_index: u32) -> Result<Self, Error> {
+    fn new(base: AllocatorBase, worker_index: u32) -> Result<Self, Error> {
         // SAFETY: The header is assumed to be valid and initialized.
-        if worker_index >= unsafe { header.as_ref() }.num_workers {
+        if worker_index >= unsafe { base.header().as_ref() }.num_workers {
             return Err(Error::InvalidWorkerIndex);
         }
-        Ok(Allocator {
-            base: AllocatorBase::new(header, file_size),
-            worker_index,
-        })
+        Ok(Allocator { base, worker_index })
     }
 }
 
@@ -90,13 +116,6 @@ unsafe impl Send for FreeOnlyAllocator {}
 impl Drop for Allocator {
     fn drop(&mut self) {
         self.release_worker();
-        self.base.unmap();
-    }
-}
-
-impl Drop for FreeOnlyAllocator {
-    fn drop(&mut self) {
-        self.base.unmap();
     }
 }
 
@@ -105,8 +124,15 @@ impl FreeOnlyAllocator {
     pub fn join(file: &File) -> Result<Self, Error> {
         let (header, file_size) = crate::init::join(file)?;
         Ok(FreeOnlyAllocator {
-            base: AllocatorBase::new(header, file_size),
+            base: AllocatorBase::from_mapping(header, file_size),
         })
+    }
+
+    /// Join an existing allocator using the same in-process mapping.
+    pub fn join_from_existing(existing: &Allocator) -> Self {
+        Self {
+            base: existing.base.clone(),
+        }
     }
 }
 
@@ -202,7 +228,7 @@ impl Allocator {
         // - The slab index is guaranteed to be valid by `pop`.
         // - The size index is guaranteed to be valid by the caller.
         unsafe {
-            let slab_capacity = self.base.header.as_ref().slab_size / size_class(size_index);
+            let slab_capacity = self.base.header().as_ref().slab_size / size_class(size_index);
             self.slab_free_stack(slab_index).reset(slab_capacity as u16);
         };
         // SAFETY: The size index is guaranteed to be valid by caller.
@@ -385,13 +411,15 @@ impl FreeOnlyAllocator {
 }
 
 impl AllocatorBase {
-    fn new(header: NonNull<Header>, file_size: usize) -> Self {
-        Self { header, file_size }
+    fn from_mapping(header: NonNull<Header>, file_size: usize) -> Self {
+        Self {
+            region: Arc::new(MappedRegion { header, file_size }),
+        }
     }
 
-    fn unmap(&self) {
-        // SAFETY: The header is guaranteed to be valid and initialized.
-        let _ = crate::memory_map::unmap_file(self.header.as_ptr().cast(), self.file_size);
+    #[inline]
+    fn header(&self) -> NonNull<Header> {
+        self.region.header
     }
 
     /// Find the offset given a pointer.
@@ -399,7 +427,7 @@ impl AllocatorBase {
     /// # Safety
     /// - The `ptr` must be a valid pointer in the allocator's address space.
     unsafe fn offset(&self, ptr: NonNull<u8>) -> usize {
-        ptr.byte_offset_from(self.header) as usize
+        ptr.byte_offset_from(self.header()) as usize
     }
 
     /// Return a ptr given a shareable offset - calculated by `offset`.
@@ -408,14 +436,14 @@ impl AllocatorBase {
     ///
     /// - Caller must ensure the offset is valid for this allocator.
     unsafe fn ptr_from_offset(&self, offset: usize) -> NonNull<u8> {
-        unsafe { self.header.byte_add(offset) }.cast()
+        unsafe { self.header().byte_add(offset) }.cast()
     }
 
     /// Find the slab index and index within the slab for a given offset.
     fn find_allocation_indexes(&self, offset: usize) -> AllocationIndexes {
         let (slab_index, offset_within_slab) = {
             // SAFETY: The header is assumed to be valid and initialized.
-            let header = unsafe { self.header.as_ref() };
+            let header = unsafe { self.header().as_ref() };
             debug_assert!(offset >= header.slabs_offset as usize);
             let offset_from_slab_start = offset.wrapping_sub(header.slabs_offset as usize);
             let slab_index = (offset_from_slab_start / header.slab_size as usize) as u32;
@@ -483,9 +511,9 @@ impl AllocatorBase {
     /// - The `slab_index` must be a valid index for the slabs.
     unsafe fn slab_meta(&self, slab_index: u32) -> NonNull<SlabMeta> {
         // SAFETY: The header is assumed to be valid and initialized.
-        let offset = unsafe { self.header.as_ref() }.slab_shared_meta_offset;
+        let offset = unsafe { self.header().as_ref() }.slab_shared_meta_offset;
         // SAFETY: The header is guaranteed to be valid and initialized.
-        let slab_metas = unsafe { self.header.byte_add(offset as usize).cast::<SlabMeta>() };
+        let slab_metas = unsafe { self.header().byte_add(offset as usize).cast::<SlabMeta>() };
         // SAFETY: The `slab_index` is guaranteed to be valid by the caller.
         unsafe { slab_metas.add(slab_index as usize) }
     }
@@ -497,13 +525,13 @@ impl AllocatorBase {
     unsafe fn slab(&self, slab_index: u32) -> NonNull<u8> {
         let (slab_size, offset) = {
             // SAFETY: The header is assumed to be valid and initialized.
-            let header = unsafe { self.header.as_ref() };
+            let header = unsafe { self.header().as_ref() };
             (header.slab_size, header.slabs_offset)
         };
         // SAFETY: The header is guaranteed to be valid and initialized.
         // The slabs are laid out sequentially after the free stacks.
         unsafe {
-            self.header
+            self.header()
                 .byte_add(offset as usize)
                 .byte_add(slab_index as usize * slab_size as usize)
                 .cast()
@@ -512,9 +540,9 @@ impl AllocatorBase {
 
     fn free_list_elements(&self) -> NonNull<LinkedListNode> {
         // SAFETY: The header is assumed to be valid and initialized.
-        let offset = unsafe { self.header.as_ref() }.free_list_elements_offset;
+        let offset = unsafe { self.header().as_ref() }.free_list_elements_offset;
         // SAFETY: The header is guaranteed to be valid and initialized.
-        unsafe { self.header.byte_add(offset as usize) }.cast()
+        unsafe { self.header().byte_add(offset as usize) }.cast()
     }
 }
 
@@ -577,7 +605,7 @@ impl Allocator {
     /// Returns a `GlobalFreeList` to interact with the global free list.
     fn global_free_list<'a>(&'a self) -> GlobalFreeList<'a> {
         // SAFETY: The header is assumed to be valid and initialized.
-        let head = &unsafe { self.base.header.as_ref() }.global_free_list_head;
+        let head = &unsafe { self.base.header().as_ref() }.global_free_list_head;
         let list = self.free_list_elements();
         // SAFETY:
         // - `head` is a valid reference to the global free list head.
@@ -617,7 +645,7 @@ impl Allocator {
 
     fn worker_meta(&self) -> &WorkerLocalListHeads {
         // SAFETY: The worker index is guaranteed to be valid by the constructor.
-        unsafe { worker_meta_ptr(self.base.header, self.worker_index).as_ref() }
+        unsafe { worker_meta_ptr(self.base.header(), self.worker_index).as_ref() }
     }
 
     fn worker_head(&self, size_index: usize) -> &WorkerLocalListPartialFullHeads {
@@ -661,7 +689,7 @@ impl Allocator {
     unsafe fn slab_free_stack<'a>(&'a self, slab_index: u32) -> FreeStack<'a> {
         let (slab_size, offset) = {
             // SAFETY: The header is assumed to be valid and initialized.
-            let header = unsafe { self.base.header.as_ref() };
+            let header = unsafe { self.base.header().as_ref() };
             (header.slab_size, header.slab_free_stacks_offset)
         };
         let free_stack_size = header::layout::single_free_stack_size(slab_size);
@@ -670,7 +698,7 @@ impl Allocator {
         // for top, capacity, and the trailing stack.
         let mut top = unsafe {
             self.base
-                .header
+                .header()
                 .byte_add(offset as usize)
                 .byte_add(slab_index as usize * free_stack_size)
                 .cast()
@@ -916,7 +944,7 @@ mod tests {
         let num_workers = 4;
         let (_file, allocator) = initialize_for_test(slab_size, num_workers);
 
-        let num_slabs = unsafe { allocator.base.header.as_ref() }.num_slabs;
+        let num_slabs = unsafe { allocator.base.header().as_ref() }.num_slabs;
         for index in 0..num_slabs {
             let slab_index = unsafe { allocator.take_slab(0) }.unwrap();
             assert_eq!(slab_index, index);
@@ -984,6 +1012,26 @@ mod tests {
             allocator_0.find_allocation_indexes(allocator_0.offset(same_slab_allocation))
         };
         assert_eq!(allocation_indexes.slab_index, slab_index);
+    }
+
+    #[test]
+    fn test_join_from_existing_reuses_mapping() {
+        let slab_size = 65536; // 64 KiB
+        let num_workers = 4;
+        let (_file, allocator_0) = initialize_for_test(slab_size, num_workers);
+
+        let allocator_1 = Allocator::join_from_existing(&allocator_0).unwrap();
+        assert_ne!(allocator_0.worker_index, allocator_1.worker_index);
+        assert_eq!(
+            allocator_0.base.header().as_ptr(),
+            allocator_1.base.header().as_ptr()
+        );
+
+        let free_only_allocator = FreeOnlyAllocator::join_from_existing(&allocator_0);
+        assert_eq!(
+            allocator_0.base.header().as_ptr(),
+            free_only_allocator.base.header().as_ptr()
+        );
     }
 
     #[test]
