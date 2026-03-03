@@ -1,4 +1,4 @@
-use core::sync::atomic::AtomicU32;
+use crate::sync::AtomicU32;
 
 /// A node in various linked lists used in the allocator.
 /// Each node is associated with a slab index.

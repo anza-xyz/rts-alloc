@@ -1,6 +1,6 @@
+use crate::sync::{AtomicU32, Ordering};
 use crate::{index::NULL_U32, linked_list_node::LinkedListNode};
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU32, Ordering};
 
 /// A doubly linked-list that tracks slabs assigned to a worker.
 /// This list is not safe to use concurrently across processes,
@@ -122,7 +122,7 @@ impl<'a> WorkerLocalList<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::AtomicU32;
+    use crate::sync::AtomicU32;
 
     #[test]
     fn test_worker_local_list() {

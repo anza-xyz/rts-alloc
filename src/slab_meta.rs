@@ -1,5 +1,5 @@
+use crate::sync::{AtomicU32, AtomicUsize, Ordering};
 use crate::{cache_aligned::CacheAlignedU16, index::NULL_U16};
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 #[repr(C)]
 pub struct SlabMeta {

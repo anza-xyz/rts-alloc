@@ -1,5 +1,5 @@
-pub type CacheAlignedU16 = CacheAligned<core::sync::atomic::AtomicU16>;
-pub type CacheAlignedU32 = CacheAligned<core::sync::atomic::AtomicU32>;
+pub type CacheAlignedU16 = CacheAligned<crate::sync::AtomicU16>;
+pub type CacheAlignedU32 = CacheAligned<crate::sync::AtomicU32>;
 
 #[repr(C, align(64))]
 pub struct CacheAligned<T>(pub T);

@@ -1,7 +1,7 @@
 use crate::linked_list_node::LinkedListNode;
+use crate::sync::Ordering;
 use crate::{cache_aligned::CacheAlignedU32, index::NULL_U32};
 use core::ptr::NonNull;
-use core::sync::atomic::Ordering;
 
 /// A singly linked-list that tracks slabs not assigned to any worker.
 /// This list is safe to use concurrently across processes.

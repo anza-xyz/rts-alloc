@@ -5,11 +5,11 @@ use crate::linked_list_node::LinkedListNode;
 use crate::remote_free_list::RemoteFreeList;
 use crate::size_classes::{size_class, NUM_SIZE_CLASSES};
 use crate::slab_meta::SlabMeta;
+use crate::sync::Ordering;
 use crate::worker_local_list::WorkerLocalList;
 use crate::{error::Error, header::Header, size_classes::size_class_index};
 use core::mem::offset_of;
 use core::ptr::NonNull;
-use core::sync::atomic::Ordering;
 use std::fs::File;
 
 pub struct Allocator {

@@ -7,6 +7,12 @@ license = "Apache-2.0"
 repository = "https://github.com/anza-xyz/rts-alloc"
 authors = ["Anza Maintainers <maintainers@anza.xyz>"]
 
+[features]
+shuttle = ["dep:shuttle"]
+
+[dependencies]
+shuttle = { version = "0.8", optional = true }
+
 [target."cfg(unix)".dependencies]
 libc = { version = "0.2.174" }
 
