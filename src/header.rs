@@ -1,5 +1,6 @@
+use crate::cache_aligned::CacheAlignedU64;
+use crate::size_classes::NUM_SIZE_CLASSES;
 use crate::sync::{AtomicU32, AtomicU64, AtomicU8};
-use crate::{cache_aligned::CacheAlignedU32, size_classes::NUM_SIZE_CLASSES};
 
 pub const MAGIC: u64 = 0x727473616c6f63; // "rtsaloc"
 pub const VERSION: u32 = 1;
@@ -37,7 +38,9 @@ pub struct Header {
     pub slabs_offset: u32,
 
     /// The head of the global free list.
-    pub global_free_list_head: CacheAlignedU32,
+    ///
+    /// Packed as `[u32 generation | u32 index]` to prevent ABA races.
+    pub global_free_list_head: CacheAlignedU64,
     /// The heads of the per-worker local free lists.
     pub worker_local_list_heads: [WorkerLocalListHeads; 0],
 }

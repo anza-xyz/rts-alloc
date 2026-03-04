@@ -1,12 +1,24 @@
+use crate::cache_aligned::CacheAlignedU64;
+use crate::index::NULL_U32;
 use crate::linked_list_node::LinkedListNode;
 use crate::sync::Ordering;
-use crate::{cache_aligned::CacheAlignedU32, index::NULL_U32};
 use core::ptr::NonNull;
+
+pub(crate) const fn pack_index(gen: u32, index: u32) -> u64 {
+    ((gen as u64) << 32) | (index as u64)
+}
+
+const fn unpack_index(tagged: u64) -> (u32, u32) {
+    ((tagged >> 32) as u32, tagged as u32)
+}
 
 /// A singly linked-list that tracks slabs not assigned to any worker.
 /// This list is safe to use concurrently across processes.
+///
+/// The head uses a tagged pointer (generation counter + index) packed into
+/// a u64 to prevent ABA races on the lock-free stack.
 pub struct GlobalFreeList<'a> {
-    head: &'a CacheAlignedU32,
+    head: &'a CacheAlignedU64,
     list: NonNull<LinkedListNode>,
 }
 
@@ -14,10 +26,10 @@ impl<'a> GlobalFreeList<'a> {
     /// Creates a new `GlobalFreeList` with the given `head` and `list`.
     ///
     /// # Safety
-    /// - `head` must be a valid index into the `list` or NULL_U32.
+    /// - The index portion of `head` must be a valid index into the `list` or NULL_U32.
     /// - `list` must be a valid pointer to an array of `FreeListElement` with sufficient capacity.
     pub unsafe fn new(
-        head: &'a CacheAlignedU32,
+        head: &'a CacheAlignedU64,
         list: NonNull<LinkedListNode>,
     ) -> GlobalFreeList<'a> {
         GlobalFreeList { head, list }
@@ -32,14 +44,21 @@ impl<'a> GlobalFreeList<'a> {
         let next_head_ref = unsafe { self.get_unchecked(slab_index) };
         loop {
             let current_head = self.head.load(Ordering::Acquire);
+
+            // Optimistically update the `global_next` of our owned slab.
+            let (head_gen, head_index) = unpack_index(current_head);
             next_head_ref
                 .global_next
-                .store(current_head, Ordering::Release);
+                .store(head_index, Ordering::Release);
+
+            // NB: Generation is a global counter that gets incremented on every
+            // successful push/pop. This ensures if we pop & push the same index it will
+            // not show up as the same `self.head`.
             if self
                 .head
                 .compare_exchange(
                     current_head,
-                    slab_index,
+                    pack_index(head_gen.wrapping_add(1), slab_index),
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 )
@@ -55,18 +74,22 @@ impl<'a> GlobalFreeList<'a> {
     pub fn pop(&self) -> Option<u32> {
         loop {
             let current_head = self.head.load(Ordering::Acquire);
-            if current_head == NULL_U32 {
+            let (head_gen, head_index) = unpack_index(current_head);
+            if head_index == NULL_U32 {
                 return None; // The list is empty
             }
 
-            let current_head_ref = unsafe { self.get_unchecked(current_head) };
+            let current_head_ref = unsafe { self.get_unchecked(head_index) };
             let next_slab_index = current_head_ref.global_next.load(Ordering::Acquire);
 
+            // NB: Generation is a global counter that gets incremented on every
+            // successful push/pop. This ensures if we pop & push the same index it will
+            // not show up as the same `self.head`.
             if self
                 .head
                 .compare_exchange(
                     current_head,
-                    next_slab_index,
+                    pack_index(head_gen.wrapping_add(1), next_slab_index),
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 )
@@ -75,7 +98,7 @@ impl<'a> GlobalFreeList<'a> {
                 current_head_ref
                     .global_next
                     .store(NULL_U32, Ordering::Release);
-                return Some(current_head); // Successfully popped the slab index
+                return Some(head_index); // Successfully popped the slab index
             }
         }
     }
@@ -93,16 +116,16 @@ impl<'a> GlobalFreeList<'a> {
 mod tests {
     use super::*;
     use crate::cache_aligned::CacheAligned;
-    use crate::sync::AtomicU32;
+    use crate::sync::{AtomicU32, AtomicU64};
 
     struct SharedList {
-        head: CacheAligned<AtomicU32>,
+        head: CacheAligned<AtomicU64>,
         buffer: Vec<LinkedListNode>,
     }
 
     impl SharedList {
         fn new(len: usize) -> Self {
-            let head = CacheAligned(AtomicU32::new(NULL_U32));
+            let head = CacheAligned(AtomicU64::new(pack_index(0, NULL_U32)));
             let buffer = (0..len)
                 .map(|_| LinkedListNode {
                     global_next: AtomicU32::new(NULL_U32),
@@ -174,7 +197,7 @@ mod tests {
         fn collect_free(shared: &SharedList) -> Vec<u32> {
             let list = shared.list();
             let mut result = Vec::new();
-            let mut current = shared.head.load(Ordering::SeqCst);
+            let (_, mut current) = unpack_index(shared.head.load(Ordering::SeqCst));
             let mut visited = std::collections::HashSet::new();
             while current != NULL_U32 {
                 assert!(visited.insert(current), "LinkedList cycle detected");

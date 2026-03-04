@@ -166,9 +166,10 @@ pub mod initialize {
         header.slab_shared_meta_offset = layout.slab_shared_meta_offset;
         header.slab_free_stacks_offset = layout.slab_free_stacks_offset;
         header.slabs_offset = layout.slabs_offset;
-        header
-            .global_free_list_head
-            .store(NULL_U32, Ordering::Release);
+        header.global_free_list_head.store(
+            crate::global_free_list::pack_index(0, NULL_U32),
+            Ordering::Release,
+        );
         header.magic = crate::header::MAGIC;
         header
             .version
@@ -245,7 +246,7 @@ pub mod initialize {
         // SAFETY: The header is assumed to be valid and initialized.
         unsafe { header.as_ref() }
             .global_free_list_head
-            .store(0, Ordering::Release);
+            .store(crate::global_free_list::pack_index(0, 0), Ordering::Release);
     }
 
     fn slab_shared_meta(header: NonNull<Header>) {
