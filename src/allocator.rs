@@ -119,9 +119,6 @@ impl Allocator {
     }
 
     /// Creates a new `Allocator` for the given worker index.
-    ///
-    /// # Safety
-    /// - The `header` must point to a valid header of an initialized allocator.
     fn new(base: AllocatorBase, worker_index: u32) -> Result<Self, Error> {
         // SAFETY: The header is assumed to be valid and initialized.
         if worker_index >= unsafe { base.header().as_ref() }.num_workers {
@@ -1088,7 +1085,9 @@ mod tests {
         let allocation_size = 2048;
         let allocation = allocator_1.allocate(allocation_size).unwrap();
         unsafe {
-            allocation.as_ptr().write_bytes(0xAB, allocation_size as usize);
+            allocation
+                .as_ptr()
+                .write_bytes(0xAB, allocation_size as usize);
             assert_eq!(allocation.as_ptr().read(), 0xAB);
             allocator_1.free(allocation);
         }
@@ -1130,7 +1129,9 @@ mod tests {
         let allocation_size = 2048u32;
         let allocation = allocators[0].allocate(allocation_size).unwrap();
         unsafe {
-            allocation.as_ptr().write_bytes(0xCD, allocation_size as usize);
+            allocation
+                .as_ptr()
+                .write_bytes(0xCD, allocation_size as usize);
             assert_eq!(allocation.as_ptr().read(), 0xCD);
             allocators[0].free(allocation);
         }
