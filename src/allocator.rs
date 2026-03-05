@@ -64,12 +64,12 @@ impl Allocator {
         // SAFETY:
         // - `header` and `file_size` are trusted arguments from the above create call.
         let base = unsafe { AllocatorBase::from_mapping(header, file_size) };
+        // SAFETY: `base.header()` points to a valid, initialized header.
         let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
             Some(worker_index) => worker_index,
             None => return Err(Error::NoAvailableWorkers),
         };
 
-        // SAFETY: The header is guaranteed to be valid and initialized.
         Allocator::new(base, worker_index)
     }
 
@@ -85,12 +85,12 @@ impl Allocator {
         // SAFETY:
         // - `header` and `file_size` are trusted arguments from the above join call.
         let base = unsafe { AllocatorBase::from_mapping(header, file_size) };
+        // SAFETY: `base.header()` points to a valid, initialized header.
         let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
             Some(worker_index) => worker_index,
             None => return Err(Error::NoAvailableWorkers),
         };
 
-        // SAFETY: The header is guaranteed to be valid and initialized.
         Allocator::new(base, worker_index)
     }
 
@@ -110,11 +110,11 @@ impl Allocator {
     /// Picks the first available worker slot.
     fn join_from_base(base: &AllocatorBase) -> Result<Self, Error> {
         let base = base.clone();
+        // SAFETY: `base.header()` points to a valid, initialized header.
         let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
             Some(worker_index) => worker_index,
             None => return Err(Error::NoAvailableWorkers),
         };
-        // SAFETY: The header is guaranteed to be valid and initialized.
         Allocator::new(base, worker_index)
     }
 
