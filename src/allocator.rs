@@ -1073,6 +1073,70 @@ mod tests {
     }
 
     #[test]
+    fn test_drop_original_mapping_stays_alive() {
+        let slab_size = 65536; // 64 KiB
+        let num_workers = 4;
+        let (_file, allocator_0) = initialize_for_test(slab_size, num_workers);
+
+        // Join with a second allocator.
+        let allocator_1 = Allocator::join_from_existing(&allocator_0).unwrap();
+
+        // Drop the original.
+        drop(allocator_0);
+
+        // We can still allocate, read, and write through the shared mapping.
+        let allocation_size = 2048;
+        let allocation = allocator_1.allocate(allocation_size).unwrap();
+        unsafe {
+            allocation.as_ptr().write_bytes(0xAB, allocation_size as usize);
+            assert_eq!(allocation.as_ptr().read(), 0xAB);
+            allocator_1.free(allocation);
+        }
+    }
+
+    #[test]
+    fn test_worker_reuse_with_free_only() {
+        let slab_size = 65536; // 64 KiB
+        let num_workers = 4;
+        let (_file, allocator_0) = initialize_for_test(slab_size, num_workers);
+        let num_workers = unsafe { allocator_0.base.header().as_ref() }.num_workers;
+
+        // Join with a free only allocator (doesn't consume a worker slot).
+        let free_only_allocator = FreeOnlyAllocator::join_from_existing(&allocator_0);
+
+        // Fill all worker slots.
+        let mut allocators = Vec::new();
+        for _ in 0..(num_workers - 1) {
+            allocators.push(Allocator::join_from_existing_free_only(&free_only_allocator).unwrap());
+        }
+        assert!(Allocator::join_from_existing_free_only(&free_only_allocator).is_err());
+
+        // Drop original and take its worker spot with a new allocator.
+        drop(allocator_0);
+        allocators.push(Allocator::join_from_existing_free_only(&free_only_allocator).unwrap());
+        assert!(Allocator::join_from_existing_free_only(&free_only_allocator).is_err());
+
+        // Drop all allocators.
+        drop(allocators);
+
+        // Re-fill all the allocators from our free only observer.
+        let mut allocators = Vec::new();
+        for _ in 0..num_workers {
+            allocators.push(Allocator::join_from_existing_free_only(&free_only_allocator).unwrap());
+        }
+        assert!(Allocator::join_from_existing_free_only(&free_only_allocator).is_err());
+
+        // Verify we can allocate, write, and read through a re-joined allocator.
+        let allocation_size = 2048u32;
+        let allocation = allocators[0].allocate(allocation_size).unwrap();
+        unsafe {
+            allocation.as_ptr().write_bytes(0xCD, allocation_size as usize);
+            assert_eq!(allocation.as_ptr().read(), 0xCD);
+            allocators[0].free(allocation);
+        }
+    }
+
+    #[test]
     fn test_free_only_allocator() {
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
