@@ -97,7 +97,19 @@ impl Allocator {
     /// Join an existing allocator using the same in-process mapping.
     /// Picks the first available worker slot.
     pub fn join_from_existing(existing: &Allocator) -> Result<Self, Error> {
-        let base = existing.base.clone();
+        Self::join_from_base(&existing.base)
+    }
+
+    /// Join an existing free-only allocator using the same in-process mapping.
+    /// Picks the first available worker slot.
+    pub fn join_from_existing_free_only(existing: &FreeOnlyAllocator) -> Result<Self, Error> {
+        Self::join_from_base(&existing.base)
+    }
+
+    /// Join using a shared [`AllocatorBase`].
+    /// Picks the first available worker slot.
+    fn join_from_base(base: &AllocatorBase) -> Result<Self, Error> {
+        let base = base.clone();
         let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
             Some(worker_index) => worker_index,
             None => return Err(Error::NoAvailableWorkers),
@@ -146,9 +158,16 @@ impl FreeOnlyAllocator {
 
     /// Join an existing allocator using the same in-process mapping.
     pub fn join_from_existing(existing: &Allocator) -> Self {
-        Self {
-            base: existing.base.clone(),
-        }
+        Self::from_base(&existing.base)
+    }
+
+    /// Join an existing free-only allocator using the same in-process mapping.
+    pub fn join_from_existing_free_only(existing: &FreeOnlyAllocator) -> Self {
+        Self::from_base(&existing.base)
+    }
+
+    fn from_base(base: &AllocatorBase) -> Self {
+        Self { base: base.clone() }
     }
 }
 
