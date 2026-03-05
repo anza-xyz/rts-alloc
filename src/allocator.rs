@@ -109,13 +109,12 @@ impl Allocator {
     /// Join using a shared [`AllocatorBase`].
     /// Picks the first available worker slot.
     fn join_from_base(base: &AllocatorBase) -> Result<Self, Error> {
-        let base = base.clone();
         // SAFETY: `base.header()` points to a valid, initialized header.
         let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
             Some(worker_index) => worker_index,
             None => return Err(Error::NoAvailableWorkers),
         };
-        Allocator::new(base, worker_index)
+        Allocator::new(base.clone(), worker_index)
     }
 
     /// Creates a new `Allocator` for the given worker index.
