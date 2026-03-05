@@ -75,6 +75,11 @@ impl Allocator {
 
     /// Join an existing allocator in the provided file.
     /// Picks the first available worker slot.
+    ///
+    /// # Note
+    ///
+    /// Prefer [`Self::join_from_existing`] to re-use `mmap`s within the same
+    /// process.
     pub fn join(file: &File) -> Result<Self, Error> {
         let (header, file_size) = crate::init::join(file)?;
         // SAFETY:
@@ -125,6 +130,11 @@ impl Drop for Allocator {
 
 impl FreeOnlyAllocator {
     /// Join an existing allocator in the provided file.
+    ///
+    /// # Note
+    ///
+    /// Prefer [`Self::join_from_existing`] to re-use `mmap`s within the same
+    /// process.
     pub fn join(file: &File) -> Result<Self, Error> {
         let (header, file_size) = crate::init::join(file)?;
         // SAFETY:
