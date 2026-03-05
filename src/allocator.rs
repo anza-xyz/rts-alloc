@@ -34,10 +34,11 @@ impl Drop for MappedRegion {
     }
 }
 
-// SAFETY: `MappedRegion` is an immutable handle to a shared mapping. The backing
-// memory is process-shared and thread-safe access is enforced by allocator logic
-// and atomics in shared metadata; transferring or sharing this handle across
-// threads does not violate aliasing or thread-safety guarantees.
+// SAFETY: `MappedRegion` holds an immutable pointer and size for a shared
+// mapping. The backing memory is process-shared and thread-safe access is
+// enforced by allocator logic and atomics in shared metadata; transferring or
+// sharing this handle across threads does not violate aliasing or
+// thread-safety guarantees.
 unsafe impl Send for MappedRegion {}
 // SAFETY: See rationale above for `Send`.
 unsafe impl Sync for MappedRegion {}
@@ -443,7 +444,7 @@ impl FreeOnlyAllocator {
 
 impl AllocatorBase {
     /// # Safety
-    /// - `header` must be a valid pointer returned by `map_file`.
+    /// - `header` must be a valid pointer to an initialized mapping of `file_size` bytes.
     /// - `file_size` must be the size of the mapping.
     unsafe fn from_mapping(header: NonNull<Header>, file_size: usize) -> Self {
         Self {
