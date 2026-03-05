@@ -8,6 +8,7 @@ use crate::{
     linked_list_node::LinkedListNode,
     size_classes::{MAX_SIZE, MIN_SIZE},
 };
+use core::ffi::c_void;
 use std::{fs::File, mem::offset_of, ptr::NonNull, sync::atomic::Ordering};
 
 /// Create and initialize the allocator's backing file.
@@ -58,6 +59,13 @@ pub fn create(
 pub fn join(file: &File) -> Result<(NonNull<Header>, usize), Error> {
     let file_size = file.metadata()?.len() as usize;
     let mmap = crate::memory_map::map_file(file, file_size)?;
+
+    join_inner(mmap, file_size).inspect_err(|_| {
+        let _ = crate::memory_map::unmap_file(mmap, file_size);
+    })
+}
+
+fn join_inner(mmap: *mut c_void, file_size: usize) -> Result<(NonNull<Header>, usize), Error> {
     let header = NonNull::new(mmap.cast::<Header>()).expect("mmap already checked for null");
 
     // Verify header
