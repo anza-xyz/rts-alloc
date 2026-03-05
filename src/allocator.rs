@@ -61,7 +61,9 @@ impl Allocator {
         slab_size: u32,
     ) -> Result<Self, Error> {
         let header = crate::init::create(file, file_size, min_workers, slab_size)?;
-        let base = AllocatorBase::from_mapping(header, file_size);
+        // SAFETY:
+        // - `header` and `file_size` are trusted arguments from the above create call.
+        let base = unsafe { AllocatorBase::from_mapping(header, file_size) };
         let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
             Some(worker_index) => worker_index,
             None => return Err(Error::NoAvailableWorkers),
@@ -75,7 +77,9 @@ impl Allocator {
     /// Picks the first available worker slot.
     pub fn join(file: &File) -> Result<Self, Error> {
         let (header, file_size) = crate::init::join(file)?;
-        let base = AllocatorBase::from_mapping(header, file_size);
+        // SAFETY:
+        // - `header` and `file_size` are trusted arguments from the above join call.
+        let base = unsafe { AllocatorBase::from_mapping(header, file_size) };
         let worker_index = match unsafe { claim_any_worker_index(base.header()) } {
             Some(worker_index) => worker_index,
             None => return Err(Error::NoAvailableWorkers),
@@ -123,8 +127,10 @@ impl FreeOnlyAllocator {
     /// Join an existing allocator in the provided file.
     pub fn join(file: &File) -> Result<Self, Error> {
         let (header, file_size) = crate::init::join(file)?;
+        // SAFETY:
+        // - `header` and `file_size` are trusted arguments from the above join call.
         Ok(FreeOnlyAllocator {
-            base: AllocatorBase::from_mapping(header, file_size),
+            base: unsafe { AllocatorBase::from_mapping(header, file_size) },
         })
     }
 
@@ -411,7 +417,10 @@ impl FreeOnlyAllocator {
 }
 
 impl AllocatorBase {
-    fn from_mapping(header: NonNull<Header>, file_size: usize) -> Self {
+    /// # Safety
+    /// - `header` must be a valid pointer returned by `map_file`.
+    /// - `file_size` must be the size of the mapping.
+    unsafe fn from_mapping(header: NonNull<Header>, file_size: usize) -> Self {
         Self {
             region: Arc::new(MappedRegion { header, file_size }),
         }
