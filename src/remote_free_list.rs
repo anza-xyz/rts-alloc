@@ -13,7 +13,7 @@ pub struct RemoteFreeList<'a> {
     slab_item_size: u32,
     /// The head of the remote free list.
     head: &'a CacheAlignedU16,
-    /// Pointer to the beginnning of the slab.
+    /// Pointer to the beginning of the slab.
     slab: NonNull<u8>,
 }
 
