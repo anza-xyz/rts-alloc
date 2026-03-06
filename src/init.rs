@@ -72,10 +72,14 @@ fn join_inner(mmap: *mut c_void, file_size: usize) -> Result<(NonNull<Header>, u
     {
         // SAFETY: The header is assumed to be valid and initialized.
         let header = unsafe { header.as_ref() };
-        if header.version.load(Ordering::SeqCst) != crate::header::VERSION
-            || header.magic != crate::header::MAGIC
-            || header.num_workers == 0
-        {
+        let actual_version = header.version.load(Ordering::SeqCst);
+        if actual_version != crate::header::VERSION {
+            return Err(Error::InvalidVersion {
+                expected: crate::header::VERSION,
+                actual: actual_version,
+            });
+        }
+        if header.magic != crate::header::MAGIC || header.num_workers == 0 {
             return Err(Error::InvalidHeader);
         }
         verify_slab_size(header.slab_size)?;

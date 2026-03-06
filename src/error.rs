@@ -8,6 +8,7 @@ pub enum Error {
     NoAvailableWorkers,
     InvalidFileSize,
     AlreadyInitialized,
+    InvalidVersion { expected: u32, actual: u32 },
     InvalidHeader,
     IoError(std::io::Error),
     MmapError(std::io::Error),
@@ -24,6 +25,14 @@ impl Display for Error {
             Self::NoAvailableWorkers => write!(f, "no available workers"),
             Self::InvalidFileSize => write!(f, "invalid file size"),
             Self::AlreadyInitialized => write!(f, "already initialized"),
+            Self::InvalidVersion { expected, actual } => write!(
+                f,
+                "invalid version; expected={}.{}; found={}.{}",
+                expected >> 16,
+                expected & 0xFFFF,
+                actual >> 16,
+                actual & 0xFFFF,
+            ),
             Self::InvalidHeader => write!(f, "invalid header"),
             Self::IoError(err) => write!(f, "io error; err={err}"),
             Self::MmapError(err) => write!(f, "mmap error; err={err}"),
@@ -34,5 +43,18 @@ impl Display for Error {
 impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Self {
         Self::IoError(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_invalid_version_display() {
+        let expected: u32 = 1u32 << 16; // 1.0
+        let actual: u32 = (3u32 << 16) | 7; // 3.7
+        let err = Error::InvalidVersion { expected, actual };
+        assert_eq!(err.to_string(), "invalid version; expected=1.0; found=3.7");
     }
 }
