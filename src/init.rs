@@ -9,7 +9,7 @@ use crate::{
     size_classes::{MAX_SIZE, MIN_SIZE},
 };
 use core::ffi::c_void;
-use std::{fs::File, mem::offset_of, ptr::NonNull, sync::atomic::Ordering};
+use std::{fs::File, mem::offset_of, mem::size_of, ptr::NonNull, sync::atomic::Ordering};
 
 /// Create and initialize the allocator's backing file.
 /// Returns pointer to header.
@@ -58,6 +58,9 @@ pub fn create(
 /// Join an existing allocator, returning a pointer to the header and size.
 pub fn join(file: &File) -> Result<(NonNull<Header>, usize), Error> {
     let file_size = file.metadata()?.len() as usize;
+    if file_size < size_of::<Header>() {
+        return Err(Error::InvalidHeader);
+    }
     let mmap = crate::memory_map::map_file(file, file_size)?;
 
     join_inner(mmap, file_size).inspect_err(|_| {
@@ -70,7 +73,9 @@ fn join_inner(mmap: *mut c_void, file_size: usize) -> Result<(NonNull<Header>, u
 
     // Verify header
     {
-        // SAFETY: The header is assumed to be valid and initialized.
+        // SAFETY:
+        // - The mmap is non-null and `file_size >= size_of::<Header>()`.
+        // - Header is `#[repr(C)]` and valid for any bit pattern.
         let header = unsafe { header.as_ref() };
         let actual_version = header.version.load(Ordering::SeqCst);
         if actual_version != crate::header::VERSION {
