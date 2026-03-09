@@ -78,7 +78,7 @@ fn join_inner(mmap: *mut c_void, file_size: usize) -> Result<(NonNull<Header>, u
         // - Header is `#[repr(C)]` and valid for any bit pattern.
         let header = unsafe { header.as_ref() };
         if header.magic.load(Ordering::Acquire) != crate::header::MAGIC {
-            return Err(Error::InvalidHeader);
+            return Err(Error::InvalidMagic);
         }
         if header.version != crate::header::VERSION {
             return Err(Error::InvalidVersion {
@@ -94,7 +94,7 @@ fn join_inner(mmap: *mut c_void, file_size: usize) -> Result<(NonNull<Header>, u
         let limits = layout::max_workers(file_size, header.slab_size, header.num_workers)
             .ok_or(Error::InvalidHeader)?;
         if limits.max_workers != header.num_workers {
-            return Err(Error::InvalidHeader);
+            return Err(Error::HeaderMismatch);
         }
         let expected_layout =
             layout::layout_for_num_slabs(header.num_workers, header.slab_size, limits.usable_slabs);
@@ -105,7 +105,7 @@ fn join_inner(mmap: *mut c_void, file_size: usize) -> Result<(NonNull<Header>, u
             || header.slab_free_stacks_offset != expected_layout.slab_free_stacks_offset
             || header.slabs_offset != expected_layout.slabs_offset
         {
-            return Err(Error::InvalidHeader);
+            return Err(Error::HeaderMismatch);
         }
     }
 

@@ -2,13 +2,15 @@ use std::fmt::Display;
 
 #[derive(Debug)]
 pub enum Error {
+    InvalidMagic,
+    InvalidVersion { expected: u32, actual: u32 },
     InvalidSlabSize,
     InvalidNumWorkers,
     InvalidWorkerIndex,
+    HeaderMismatch,
     NoAvailableWorkers,
     InvalidFileSize,
     AlreadyInitialized,
-    InvalidVersion { expected: u32, actual: u32 },
     InvalidHeader,
     IoError(std::io::Error),
     MmapError(std::io::Error),
@@ -19,12 +21,7 @@ impl std::error::Error for Error {}
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidSlabSize => write!(f, "invalid slab size"),
-            Self::InvalidNumWorkers => write!(f, "invalid num workers"),
-            Self::InvalidWorkerIndex => write!(f, "invalid worker index"),
-            Self::NoAvailableWorkers => write!(f, "no available workers"),
-            Self::InvalidFileSize => write!(f, "invalid file size"),
-            Self::AlreadyInitialized => write!(f, "already initialized"),
+            Self::InvalidMagic => write!(f, "invalid magic"),
             Self::InvalidVersion { expected, actual } => write!(
                 f,
                 "invalid version; expected={}.{}; found={}.{}",
@@ -33,6 +30,13 @@ impl Display for Error {
                 actual >> 16,
                 actual & 0xFFFF,
             ),
+            Self::InvalidSlabSize => write!(f, "invalid slab size"),
+            Self::InvalidNumWorkers => write!(f, "invalid num workers"),
+            Self::InvalidWorkerIndex => write!(f, "invalid worker index"),
+            Self::HeaderMismatch => write!(f, "header mismatch"),
+            Self::NoAvailableWorkers => write!(f, "no available workers"),
+            Self::InvalidFileSize => write!(f, "invalid file size"),
+            Self::AlreadyInitialized => write!(f, "already initialized"),
             Self::InvalidHeader => write!(f, "invalid header"),
             Self::IoError(err) => write!(f, "io error; err={err}"),
             Self::MmapError(err) => write!(f, "mmap error; err={err}"),
