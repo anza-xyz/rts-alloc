@@ -159,12 +159,20 @@ pub mod initialize {
             init_header(header, slab_size, num_workers, layout);
         }
 
-        // SAFETY: The header is assumed to be valid and initialized.
+        // SAFETY:
+        // - The header is assumed to be valid and initialized.
+        // - The below functions do not require MAGIC to be initialized yet.
         unsafe {
             worker_local_lists(header);
             free_list_elements(header);
             slab_shared_meta(header);
         }
+
+        // SAFETY: The header is assumed to be valid and initialized.
+        let header = unsafe { header.as_ref() };
+        // NB: This ensures all the above non-atomic writes will be synchronized with
+        //     `join()`'s Acquire load.
+        header.magic.store(crate::header::MAGIC, Ordering::Release);
     }
 
     /// # Safety
@@ -190,9 +198,6 @@ pub mod initialize {
             Ordering::Release,
         );
         header.version = crate::header::VERSION;
-        // NB: This ensures all the above non-atomic writes will be synchronized with
-        //     `join()`'s Acquire load.
-        header.magic.store(crate::header::MAGIC, Ordering::Release);
     }
 
     /// # Safety
