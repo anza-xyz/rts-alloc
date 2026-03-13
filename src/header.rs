@@ -3,7 +3,7 @@ use crate::size_classes::NUM_SIZE_CLASSES;
 use crate::sync::{AtomicU32, AtomicU64, AtomicU8};
 
 pub const MAGIC: u64 = 0x727473616c6f63; // "rtsaloc"
-pub const VERSION_MAJOR: u16 = 2;
+pub const VERSION_MAJOR: u16 = 3;
 pub const VERSION_PATCH: u16 = 0;
 pub const VERSION: u32 = (VERSION_MAJOR as u32) << 16 | VERSION_PATCH as u32;
 
