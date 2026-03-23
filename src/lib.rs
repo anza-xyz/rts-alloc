@@ -16,3 +16,4 @@ mod sync;
 mod worker_local_list;
 
 pub use allocator::{Allocator, FreeOnlyAllocator};
+pub const MAX_ALLOC_SIZE: usize = size_classes::MAX_SIZE as usize;
