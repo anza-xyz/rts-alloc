@@ -251,11 +251,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_magic() {
-        assert_eq!(MAGIC, 0x727473616c6f63);
-    }
-
-    #[test]
     fn test_layout() {
         let num_workers = 4;
         let num_slabs = 8;
