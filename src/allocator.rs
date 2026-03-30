@@ -397,6 +397,11 @@ impl Allocator {
         self.base.ptr_from_offset(offset)
     }
 
+    /// Returns `true` if the offset falls within the slab region.
+    pub fn validate_offset(&self, offset: usize) -> bool {
+        self.base.validate_offset(offset)
+    }
+
     /// Find the slab index and index within the slab for a given offset.
     fn find_allocation_indexes(&self, offset: usize) -> AllocationIndexes {
         self.base.find_allocation_indexes(offset)
@@ -445,6 +450,11 @@ impl FreeOnlyAllocator {
     /// - Caller must ensure the offset is valid for this allocator.
     pub unsafe fn ptr_from_offset(&self, offset: usize) -> NonNull<u8> {
         self.base.ptr_from_offset(offset)
+    }
+
+    /// Returns `true` if the offset falls within the slab region.
+    pub fn validate_offset(&self, offset: usize) -> bool {
+        self.base.validate_offset(offset)
     }
 
     /// Find the slab index and index within the slab for a given offset.
@@ -497,6 +507,14 @@ impl AllocatorBase {
     /// - Caller must ensure the offset is valid for this allocator.
     unsafe fn ptr_from_offset(&self, offset: usize) -> NonNull<u8> {
         unsafe { self.header().byte_add(offset) }.cast()
+    }
+
+    /// Returns `true` if the offset falls within the slab region.
+    fn validate_offset(&self, offset: usize) -> bool {
+        let slabs_offset = self.layout.slabs_offset as usize;
+        let slabs_end =
+            slabs_offset + self.layout.num_slabs as usize * self.layout.slab_size as usize;
+        offset >= slabs_offset && offset < slabs_end
     }
 
     /// Find the slab index and index within the slab for a given offset.
@@ -1178,5 +1196,30 @@ mod tests {
                 .unwrap(),
             allocation_indexes.index_within_slab
         );
+    }
+
+    #[test]
+    fn test_validate_offset() {
+        let slab_size = 65536; // 64 KiB
+        let num_workers = 4;
+        let (_file, allocator) = initialize_for_test(slab_size, num_workers);
+
+        let layout = &allocator.base.layout;
+        let slabs_offset = layout.slabs_offset as usize;
+        let slabs_end = slabs_offset + layout.num_slabs as usize * layout.slab_size as usize;
+
+        // Valid: first byte of slab region.
+        assert!(allocator.validate_offset(slabs_offset));
+        // Valid: last byte of slab region.
+        assert!(allocator.validate_offset(slabs_end - 1));
+        // Valid: somewhere in the middle.
+        assert!(allocator.validate_offset(slabs_offset + slab_size as usize));
+
+        // Invalid: before slab region.
+        assert!(!allocator.validate_offset(0));
+        assert!(!allocator.validate_offset(slabs_offset - 1));
+        // Invalid: at/past the end of the slab region.
+        assert!(!allocator.validate_offset(slabs_end));
+        assert!(!allocator.validate_offset(usize::MAX));
     }
 }
