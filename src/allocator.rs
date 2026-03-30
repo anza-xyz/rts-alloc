@@ -46,6 +46,18 @@ unsafe impl Sync for MappedRegion {}
 #[derive(Clone)]
 struct AllocatorBase {
     region: Arc<MappedRegion>,
+    layout: CachedLayout,
+}
+
+#[derive(Clone, Copy)]
+struct CachedLayout {
+    num_slabs: u32,
+    num_workers: u32,
+    slab_size: u32,
+    free_list_elements_offset: u32,
+    slab_shared_meta_offset: u32,
+    slab_free_stacks_offset: u32,
+    slabs_offset: u32,
 }
 
 impl Allocator {
@@ -120,8 +132,7 @@ impl Allocator {
 
     /// Creates a new `Allocator` for the given worker index.
     fn new(base: AllocatorBase, worker_index: u32) -> Result<Self, Error> {
-        // SAFETY: The header is assumed to be valid and initialized.
-        if worker_index >= unsafe { base.header().as_ref() }.num_workers {
+        if worker_index >= base.layout.num_workers {
             return Err(Error::InvalidWorkerIndex);
         }
         Ok(Allocator { base, worker_index })
@@ -260,7 +271,7 @@ impl Allocator {
         // - The slab index is guaranteed to be valid by `pop`.
         // - The size index is guaranteed to be valid by the caller.
         unsafe {
-            let slab_capacity = self.base.header().as_ref().slab_size / size_class(size_index);
+            let slab_capacity = self.base.layout.slab_size / size_class(size_index);
             self.slab_free_stack(slab_index).reset(slab_capacity as u16);
         };
         // SAFETY: The size index is guaranteed to be valid by caller.
@@ -447,8 +458,22 @@ impl AllocatorBase {
     /// - `header` must be a valid pointer to an initialized mapping of `file_size` bytes.
     /// - `file_size` must be the size of the mapping.
     unsafe fn from_mapping(header: NonNull<Header>, file_size: usize) -> Self {
+        let layout = {
+            // SAFETY: The header is assumed to be valid and initialized by the caller.
+            let header = unsafe { header.as_ref() };
+            CachedLayout {
+                num_slabs: header.num_slabs,
+                num_workers: header.num_workers,
+                slab_size: header.slab_size,
+                free_list_elements_offset: header.free_list_elements_offset,
+                slab_shared_meta_offset: header.slab_shared_meta_offset,
+                slab_free_stacks_offset: header.slab_free_stacks_offset,
+                slabs_offset: header.slabs_offset,
+            }
+        };
         Self {
             region: Arc::new(MappedRegion { header, file_size }),
+            layout,
         }
     }
 
@@ -477,16 +502,17 @@ impl AllocatorBase {
     /// Find the slab index and index within the slab for a given offset.
     fn find_allocation_indexes(&self, offset: usize) -> AllocationIndexes {
         let (slab_index, offset_within_slab) = {
-            // SAFETY: The header is assumed to be valid and initialized.
-            let header = unsafe { self.header().as_ref() };
-            debug_assert!(offset >= header.slabs_offset as usize);
-            let offset_from_slab_start = offset.wrapping_sub(header.slabs_offset as usize);
-            let slab_index = (offset_from_slab_start / header.slab_size as usize) as u32;
-            debug_assert!(slab_index < header.num_slabs, "slab index out of bounds");
+            assert!(offset >= self.layout.slabs_offset as usize);
+            let offset_from_slab_start = offset.wrapping_sub(self.layout.slabs_offset as usize);
+            let slab_index = (offset_from_slab_start / self.layout.slab_size as usize) as u32;
+            assert!(
+                slab_index < self.layout.num_slabs,
+                "slab index out of bounds"
+            );
 
             // SAFETY: The slab size is guaranteed to be a power of 2, for a valid header.
             let offset_within_slab =
-                unsafe { Self::offset_within_slab(header.slab_size, offset_from_slab_start) };
+                unsafe { Self::offset_within_slab(self.layout.slab_size, offset_from_slab_start) };
 
             (slab_index, offset_within_slab)
         };
@@ -545,8 +571,7 @@ impl AllocatorBase {
     /// # Safety
     /// - The `slab_index` must be a valid index for the slabs.
     unsafe fn slab_meta(&self, slab_index: u32) -> NonNull<SlabMeta> {
-        // SAFETY: The header is assumed to be valid and initialized.
-        let offset = unsafe { self.header().as_ref() }.slab_shared_meta_offset;
+        let offset = self.layout.slab_shared_meta_offset;
         // SAFETY: The header is guaranteed to be valid and initialized.
         let slab_metas = unsafe { self.header().byte_add(offset as usize).cast::<SlabMeta>() };
         // SAFETY: The `slab_index` is guaranteed to be valid by the caller.
@@ -558,24 +583,18 @@ impl AllocatorBase {
     /// # Safety
     /// - The `slab_index` must be a valid index for the slabs.
     unsafe fn slab(&self, slab_index: u32) -> NonNull<u8> {
-        let (slab_size, offset) = {
-            // SAFETY: The header is assumed to be valid and initialized.
-            let header = unsafe { self.header().as_ref() };
-            (header.slab_size, header.slabs_offset)
-        };
         // SAFETY: The header is guaranteed to be valid and initialized.
         // The slabs are laid out sequentially after the free stacks.
         unsafe {
             self.header()
-                .byte_add(offset as usize)
-                .byte_add(slab_index as usize * slab_size as usize)
+                .byte_add(self.layout.slabs_offset as usize)
+                .byte_add(slab_index as usize * self.layout.slab_size as usize)
                 .cast()
         }
     }
 
     fn free_list_elements(&self) -> NonNull<LinkedListNode> {
-        // SAFETY: The header is assumed to be valid and initialized.
-        let offset = unsafe { self.header().as_ref() }.free_list_elements_offset;
+        let offset = self.layout.free_list_elements_offset;
         // SAFETY: The header is guaranteed to be valid and initialized.
         unsafe { self.header().byte_add(offset as usize) }.cast()
     }
@@ -722,19 +741,14 @@ impl Allocator {
     /// # Safety
     /// - The `slab_index` must be a valid index for the slabs.
     unsafe fn slab_free_stack<'a>(&'a self, slab_index: u32) -> FreeStack<'a> {
-        let (slab_size, offset) = {
-            // SAFETY: The header is assumed to be valid and initialized.
-            let header = unsafe { self.base.header().as_ref() };
-            (header.slab_size, header.slab_free_stacks_offset)
-        };
-        let free_stack_size = header::layout::single_free_stack_size(slab_size);
+        let free_stack_size = header::layout::single_free_stack_size(self.base.layout.slab_size);
 
         // SAFETY: The `FreeStack` layout is guaranteed to have enough room
         // for top, capacity, and the trailing stack.
         let mut top = unsafe {
             self.base
                 .header()
-                .byte_add(offset as usize)
+                .byte_add(self.base.layout.slab_free_stacks_offset as usize)
                 .byte_add(slab_index as usize * free_stack_size)
                 .cast()
         };
@@ -979,8 +993,7 @@ mod tests {
         let num_workers = 4;
         let (_file, allocator) = initialize_for_test(slab_size, num_workers);
 
-        let num_slabs = unsafe { allocator.base.header().as_ref() }.num_slabs;
-        for index in 0..num_slabs {
+        for index in 0..allocator.base.layout.num_slabs {
             let slab_index = unsafe { allocator.take_slab(0) }.unwrap();
             assert_eq!(slab_index, index);
         }
@@ -1098,7 +1111,7 @@ mod tests {
         let slab_size = 65536; // 64 KiB
         let num_workers = 4;
         let (_file, allocator_0) = initialize_for_test(slab_size, num_workers);
-        let num_workers = unsafe { allocator_0.base.header().as_ref() }.num_workers;
+        let num_workers = allocator_0.base.layout.num_workers;
 
         // Join with a free only allocator (doesn't consume a worker slot).
         let free_only_allocator = FreeOnlyAllocator::join_from_existing(&allocator_0);
