@@ -30,12 +30,9 @@ pub unsafe fn size_class_index_unchecked(size: u32) -> usize {
 }
 
 /// Returns the size class for a given `index`.
-///
-/// # Safety
-/// - The `index` must be less than `NUM_SIZE_CLASSES`.
 #[inline]
-pub unsafe fn size_class(index: usize) -> u32 {
-    *SIZE_CLASSES.get_unchecked(index)
+pub fn size_class(index: usize) -> u32 {
+    SIZE_CLASSES[index]
 }
 
 #[cfg(test)]
@@ -54,8 +51,7 @@ mod tests {
     #[test]
     fn test_size_class() {
         for (i, &size) in SIZE_CLASSES.iter().enumerate() {
-            // SAFETY: `i` is always less than `NUM_SIZE_CLASSES`.
-            assert_eq!(unsafe { size_class(i) }, size);
+            assert_eq!(size_class(i), size);
         }
     }
 }

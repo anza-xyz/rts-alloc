@@ -236,8 +236,7 @@ impl Allocator {
         maybe_index_within_slab.map(|index_within_slab| {
             // SAFETY: The `slab_index` is guaranteed to be valid by the caller.
             let slab = unsafe { self.slab(slab_index) };
-            // SAFETY: The `size_index` is guaranteed to be valid by the caller.
-            let size = unsafe { size_class(size_index) };
+            let size = size_class(size_index);
             self.worker_meta()
                 .outstanding_allocation_bytes
                 .fetch_add(size as u64, Ordering::Relaxed);
@@ -496,8 +495,7 @@ impl AllocatorBase {
             let size_class_index = unsafe { self.slab_meta(slab_index).as_ref() }
                 .size_class_index
                 .load(Ordering::Acquire);
-            // SAFETY: The size class index is guaranteed to be valid by valid slab meta.
-            let size_class = unsafe { size_class(size_class_index) };
+            let size_class = size_class(size_class_index);
             (offset_within_slab / size_class) as u16
         };
 
@@ -524,9 +522,7 @@ impl AllocatorBase {
         let (head, slab_item_size) = {
             // SAFETY: The slab index is guaranteed to be valid by the caller.
             let slab_meta = unsafe { self.slab_meta(slab_index).as_ref() };
-            // SAFETY: The slab meta is guaranteed to be valid by the caller.
-            let size_class =
-                unsafe { size_class(slab_meta.size_class_index.load(Ordering::Acquire)) };
+            let size_class = size_class(slab_meta.size_class_index.load(Ordering::Acquire));
             (&slab_meta.remote_free_stack_head, size_class)
         };
         // SAFETY: The slab index is guaranteed to be valid by the caller.
@@ -696,8 +692,7 @@ impl Allocator {
         let size_index = unsafe { self.slab_meta(slab_index).as_ref() }
             .size_class_index
             .load(Ordering::Relaxed);
-        // SAFETY: The slab meta stores a valid size class index while assigned.
-        let size = unsafe { size_class(size_index) };
+        let size = size_class(size_index);
         (size_index, size)
     }
 
@@ -851,14 +846,14 @@ mod tests {
             for size in [class_size - 1, *class_size, class_size + 1] {
                 allocations.push(allocator.allocate(size).unwrap());
                 total_allocated_bytes += size_class_index(size)
-                    .map(|i| unsafe { size_class(i) as u64 })
+                    .map(|i| size_class(i) as u64)
                     .unwrap();
             }
         }
         for size in [MAX_SIZE - 1, MAX_SIZE] {
             allocations.push(allocator.allocate(size).unwrap());
             total_allocated_bytes += size_class_index(size)
-                .map(|i| unsafe { size_class(i) as u64 })
+                .map(|i| size_class(i) as u64)
                 .unwrap();
         }
         assert_eq!(
