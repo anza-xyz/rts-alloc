@@ -2,7 +2,6 @@ use crate::cache_aligned::CacheAlignedU64;
 use crate::index::NULL_U32;
 use crate::linked_list_node::LinkedListNode;
 use crate::sync::Ordering;
-use core::ptr::NonNull;
 
 pub(crate) const fn pack_index(gen: u32, index: u32) -> u64 {
     ((gen as u64) << 32) | (index as u64)
@@ -19,19 +18,17 @@ const fn unpack_index(tagged: u64) -> (u32, u32) {
 /// a u64 to prevent ABA races on the lock-free stack.
 pub struct GlobalFreeList<'a> {
     head: &'a CacheAlignedU64,
-    list: NonNull<LinkedListNode>,
+    list: &'a [LinkedListNode],
 }
 
 impl<'a> GlobalFreeList<'a> {
     /// Creates a new `GlobalFreeList` with the given `head` and `list`.
     ///
-    /// # Safety
-    /// - The index portion of `head` must be a valid index into the `list` or NULL_U32.
-    /// - `list` must be a valid pointer to an array of `FreeListElement` with sufficient capacity.
-    pub unsafe fn new(
-        head: &'a CacheAlignedU64,
-        list: NonNull<LinkedListNode>,
-    ) -> GlobalFreeList<'a> {
+    /// # Note
+    ///
+    /// If the index portion of `head` is not a valid index into the `list` or NULL_U32,
+    /// subsequent function calls will panic but won't trigger UB.
+    pub fn new(head: &'a CacheAlignedU64, list: &'a [LinkedListNode]) -> GlobalFreeList<'a> {
         GlobalFreeList { head, list }
     }
 
@@ -40,8 +37,7 @@ impl<'a> GlobalFreeList<'a> {
     /// # Safety
     /// - `slab_index` must be a valid index into the `list`.
     pub unsafe fn push(&self, slab_index: u32) {
-        // SAFETY: The `slab_index` is assumed to be a valid index into the `list`.
-        let next_head_ref = unsafe { self.get_unchecked(slab_index) };
+        let next_head_ref = &self.list[slab_index as usize];
         loop {
             let current_head = self.head.load(Ordering::Acquire);
 
@@ -71,6 +67,9 @@ impl<'a> GlobalFreeList<'a> {
 
     /// Pops a slab index from the head of the global free list.
     /// Returns `None` if the list is empty.
+    ///
+    /// The `head_index` is read from shared memory and bounds-checked
+    /// against the list to guard against cross-process corruption.
     pub fn pop(&self) -> Option<u32> {
         loop {
             let current_head = self.head.load(Ordering::Acquire);
@@ -79,7 +78,7 @@ impl<'a> GlobalFreeList<'a> {
                 return None; // The list is empty
             }
 
-            let current_head_ref = unsafe { self.get_unchecked(head_index) };
+            let current_head_ref = &self.list[head_index as usize];
             let next_slab_index = current_head_ref.global_next.load(Ordering::Acquire);
 
             // NB: Generation is a global counter that gets incremented on every
@@ -101,14 +100,6 @@ impl<'a> GlobalFreeList<'a> {
                 return Some(head_index); // Successfully popped the slab index
             }
         }
-    }
-
-    /// Get reference to a specific slab indexes `FreeListElement`.
-    ///
-    /// # Safety
-    /// - The `slab_index` must be a valid index into the `list`.
-    pub unsafe fn get_unchecked(&self, slab_index: u32) -> &LinkedListNode {
-        self.list.add(slab_index as usize).as_ref()
     }
 }
 
@@ -138,12 +129,7 @@ mod tests {
         }
 
         fn list(&self) -> GlobalFreeList<'_> {
-            unsafe {
-                GlobalFreeList::new(
-                    &self.head,
-                    NonNull::new(self.buffer.as_ptr() as *mut LinkedListNode).unwrap(),
-                )
-            }
+            GlobalFreeList::new(&self.head, &self.buffer)
         }
     }
 
@@ -162,28 +148,25 @@ mod tests {
         let shared = SharedList::new(LIST_CAPACITY);
         let global_free_list = shared.list();
 
-        // SAFETY: Pushing and popping within the capacity.
-        unsafe {
-            let range = 0..3;
-            for index in range.clone() {
-                global_free_list.push(index);
-            }
+        let range = 0..3;
+        for index in range.clone() {
+            // SAFETY: index is within the list capacity.
+            unsafe { global_free_list.push(index) };
+        }
 
-            for index in range.clone().rev() {
-                assert_eq!(global_free_list.pop(), Some(index));
-            }
-            assert_eq!(global_free_list.pop(), None);
+        for index in range.clone().rev() {
+            assert_eq!(global_free_list.pop(), Some(index));
+        }
+        assert_eq!(global_free_list.pop(), None);
 
-            // check that the links have been cleared
-            for index in range {
-                assert_eq!(
-                    global_free_list
-                        .get_unchecked(index)
-                        .global_next
-                        .load(Ordering::Acquire),
-                    NULL_U32
-                );
-            }
+        // check that the links have been cleared
+        for index in range {
+            assert_eq!(
+                shared.buffer[index as usize]
+                    .global_next
+                    .load(Ordering::Acquire),
+                NULL_U32
+            );
         }
     }
 
@@ -195,7 +178,6 @@ mod tests {
         const NUM_NODES: usize = 8;
 
         fn collect_free(shared: &SharedList) -> Vec<u32> {
-            let list = shared.list();
             let mut result = Vec::new();
             let (_, mut current) = unpack_index(shared.head.load(Ordering::SeqCst));
             let mut visited = std::collections::HashSet::new();
@@ -207,7 +189,7 @@ mod tests {
                 result.push(current);
 
                 // Progress to next node (may be terminal).
-                current = unsafe { list.get_unchecked(current) }
+                current = shared.buffer[current as usize]
                     .global_next
                     .load(Ordering::SeqCst);
             }
@@ -221,7 +203,7 @@ mod tests {
                 let shared = Arc::new(SharedList::new(NUM_NODES));
                 let list = shared.list();
 
-                // Push 3 nodes into our global free list.
+                // SAFETY: Indices 0..3 are within the list capacity.
                 unsafe {
                     list.push(0);
                     list.push(1);

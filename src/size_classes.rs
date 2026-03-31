@@ -30,6 +30,9 @@ pub unsafe fn size_class_index_unchecked(size: u32) -> usize {
 }
 
 /// Returns the size class for a given `index`.
+///
+/// # Panics
+/// - If `index` is out of bounds.
 #[inline]
 pub fn size_class(index: usize) -> u32 {
     SIZE_CLASSES[index]
