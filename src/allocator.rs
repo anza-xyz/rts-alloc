@@ -3,7 +3,7 @@ use crate::global_free_list::GlobalFreeList;
 use crate::header::{self, WorkerLocalListHeads, WorkerLocalListPartialFullHeads};
 use crate::linked_list_node::LinkedListNode;
 use crate::remote_free_list::RemoteFreeList;
-use crate::size_classes::{size_class, NUM_SIZE_CLASSES};
+use crate::size_classes::{size_class, size_class_unchecked, NUM_SIZE_CLASSES};
 use crate::slab_meta::SlabMeta;
 use crate::sync::Ordering;
 use crate::worker_local_list::WorkerLocalList;
@@ -247,7 +247,8 @@ impl Allocator {
         maybe_index_within_slab.map(|index_within_slab| {
             // SAFETY: The `slab_index` is guaranteed to be valid by the caller.
             let slab = unsafe { self.slab(slab_index) };
-            let size = size_class(size_index);
+            // SAFETY: The `size_index` is guaranteed to be valid by the caller.
+            let size = unsafe { size_class_unchecked(size_index) };
             self.worker_meta()
                 .outstanding_allocation_bytes
                 .fetch_add(size as u64, Ordering::Relaxed);
@@ -270,7 +271,7 @@ impl Allocator {
         // - The slab index is guaranteed to be valid by `pop`.
         // - The size index is guaranteed to be valid by the caller.
         unsafe {
-            let slab_capacity = self.base.layout.slab_size / size_class(size_index);
+            let slab_capacity = self.base.layout.slab_size / size_class_unchecked(size_index);
             self.slab_free_stack(slab_index).reset(slab_capacity as u16);
         };
         // SAFETY: The size index is guaranteed to be valid by caller.

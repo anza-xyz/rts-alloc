@@ -38,6 +38,15 @@ pub fn size_class(index: usize) -> u32 {
     SIZE_CLASSES[index]
 }
 
+/// Returns the size class for a given `index`.
+///
+/// # Safety
+/// - `index` must be less than `NUM_SIZE_CLASSES`.
+#[inline]
+pub unsafe fn size_class_unchecked(index: usize) -> u32 {
+    *SIZE_CLASSES.get_unchecked(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
