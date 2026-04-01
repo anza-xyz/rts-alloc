@@ -594,6 +594,7 @@ impl AllocatorBase {
         let offset = self.layout.free_list_elements_offset;
         // SAFETY:
         // - The header is guaranteed to be valid and initialized.
+        // - The pointer is aligned for `LinkedListNode` (guaranteed by layout).
         // - The pointer is valid for `num_slabs` contiguous `LinkedListNode` elements.
         unsafe {
             core::slice::from_raw_parts(
