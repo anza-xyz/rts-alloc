@@ -11,7 +11,7 @@ authors = ["Anza Maintainers <maintainers@anza.xyz>"]
 shuttle = ["dep:shuttle"]
 
 [dependencies]
-shuttle = { version = "0.8", optional = true }
+shuttle = { version = "0.9", optional = true }
 
 [target."cfg(unix)".dependencies]
 libc = { version = "0.2.174" }
