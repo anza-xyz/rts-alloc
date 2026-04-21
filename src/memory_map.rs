@@ -52,16 +52,14 @@ pub(crate) fn map_file(file: &File, size: usize) -> Result<*mut c_void, Error> {
     }
 
     let mmap = unsafe { MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, size) };
-
-    unsafe {
-        CloseHandle(mapping);
-    }
-
     if mmap.Value.is_null() {
-        return Err(Error::MmapError(std::io::Error::last_os_error()));
+        let err = Error::MmapError(std::io::Error::last_os_error());
+        unsafe { CloseHandle(mapping) };
+        Err(err)
+    } else {
+        unsafe { CloseHandle(mapping) };
+        Ok(mmap.Value.cast())
     }
-
-    Ok(mmap.Value.cast())
 }
 
 #[cfg(unix)]
