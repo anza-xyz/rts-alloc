@@ -581,26 +581,9 @@ impl AllocatorBase {
             return;
         }
 
-        // SAFETY: The worker index is checked against the layout above.
-        let worker_meta = unsafe { worker_meta_ptr(self.header(), worker_index).as_ref() };
-        let remote_free_head = &worker_meta.remote_free_head;
-        // SAFETY: The offset is guaranteed to refer to the allocation being freed.
-        let remote_free_node: &AtomicUsize =
-            unsafe { self.ptr_from_offset(offset).cast().as_ref() };
-
-        let mut current_head = remote_free_head.load(Ordering::Acquire);
-        loop {
-            remote_free_node.store(current_head, Ordering::Release);
-            match remote_free_head.compare_exchange(
-                current_head,
-                offset,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return,
-                Err(next_head) => current_head = next_head,
-            }
-        }
+        // SAFETY: `offset` is the valid, uniquely freed allocation being
+        // published, and `worker_index` was read from its slab metadata.
+        unsafe { self.publish_remote_free_chain(worker_index, offset, offset) };
     }
 
     /// Return the indexes and worker assigned to the allocation at `offset`.
