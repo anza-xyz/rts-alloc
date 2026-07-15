@@ -3,9 +3,9 @@ use core::ptr::NonNull;
 
 /// Collects frees and publishes remote frees in batches grouped by owning worker.
 ///
-/// Frees for the [`Allocator`] that created the batch are reclaimed immediately.
-/// All other frees are linked into intrusive chains and published when [`Self::flush`]
-/// is called or the batch is dropped.
+/// Frees owned by the worker represented by the [`Allocator`] handle that created
+/// the batch are reclaimed immediately. All other frees are linked into intrusive
+/// chains and published when [`Self::flush`] is called or the batch is dropped.
 pub struct RemoteFreeBatch<'a> {
     source: RemoteFreeBatchSource<'a>,
     chains: Vec<WorkerRemoteFreeChain>,
@@ -35,7 +35,7 @@ impl RemoteFreeBatchSource<'_> {
     /// Find the offset for an allocation pointer.
     ///
     /// # Safety
-    /// - `ptr` must be a valid pointer in the allocator's address space.
+    /// - `ptr` must be a valid pointer into this allocator region.
     unsafe fn offset(&self, ptr: NonNull<u8>) -> usize {
         match self {
             Self::Allocator(allocator) => unsafe { allocator.offset(ptr) },
@@ -52,29 +52,29 @@ impl<'a> RemoteFreeBatch<'a> {
         }
     }
 
-    /// Free a block of memory previously allocated by this allocator.
+    /// Free a block of memory from this allocator region.
     ///
     /// Locally owned allocations are reclaimed immediately. Remote frees remain
     /// private to this batch until it is flushed or dropped.
     ///
     /// # Safety
-    /// - The `ptr` must be a valid pointer to a block of memory allocated by this allocator.
+    /// - `ptr` must point to a valid allocation in this allocator region.
     /// - The `ptr` must not have been freed before or added to another free batch.
     pub unsafe fn free(&mut self, ptr: NonNull<u8>) {
-        // SAFETY: The pointer is assumed to be valid and allocated by this allocator.
+        // SAFETY: The caller guarantees that the pointer refers to a valid allocation
+        // in this allocator region.
         let offset = unsafe { self.source.offset(ptr) };
         // SAFETY: The offset was derived from the caller-provided allocation pointer.
         unsafe { self.free_offset(offset) };
     }
 
-    /// Free a block of memory previously allocated by this allocator.
+    /// Free a block of memory from this allocator region.
     ///
     /// Locally owned allocations are reclaimed immediately. Remote frees remain
     /// private to this batch until it is flushed or dropped.
     ///
     /// # Safety
-    /// - The `offset` must be a valid offset to a block of memory allocated by this allocator,
-    ///   i.e. an offset returned by [`Allocator::offset`] or [`FreeOnlyAllocator::offset`].
+    /// - `offset` must identify a valid allocation in this allocator region.
     /// - The `offset` must not have been freed before or added to another free batch.
     pub unsafe fn free_offset(&mut self, offset: usize) {
         // SAFETY: The caller guarantees that `offset` refers to a valid allocation.
