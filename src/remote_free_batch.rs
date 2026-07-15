@@ -124,16 +124,15 @@ impl<'a> RemoteFreeBatch<'a> {
     /// - `offset` must refer to a valid, uniquely freed allocation.
     /// - `worker_index` must be the worker currently assigned to its slab.
     unsafe fn push_remote(&mut self, worker_index: u32, offset: usize) {
-        if let Some(chain_index) = self
+        if let Some(chain) = self
             .chains
-            .iter()
-            .position(|chain| chain.worker_index == worker_index)
+            .iter_mut()
+            .find(|chain| chain.worker_index == worker_index)
         {
-            let next = self.chains[chain_index].head;
-            // SAFETY: Guaranteed by the caller; `next` is another valid offset in
-            // the same private chain.
-            unsafe { self.source.base().set_remote_free_next(offset, next) };
-            self.chains[chain_index].head = offset;
+            // SAFETY: Guaranteed by the caller; `chain.head` is another valid
+            // offset in the same private chain.
+            unsafe { self.source.base().set_remote_free_next(offset, chain.head) };
+            chain.head = offset;
             return;
         }
 
