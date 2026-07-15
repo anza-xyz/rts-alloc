@@ -9,10 +9,12 @@ mod index;
 mod init;
 mod linked_list_node;
 mod memory_map;
+mod remote_free_batch;
 mod size_classes;
 mod slab_meta;
 mod sync;
 mod worker_local_list;
 
 pub use allocator::{Allocator, FreeOnlyAllocator};
+pub use remote_free_batch::RemoteFreeBatch;
 pub const MAX_ALLOC_SIZE: usize = size_classes::MAX_SIZE as usize;

@@ -50,7 +50,7 @@ unsafe impl Send for MappedRegion {}
 unsafe impl Sync for MappedRegion {}
 
 #[derive(Clone)]
-struct AllocatorBase {
+pub(crate) struct AllocatorBase {
     region: Arc<MappedRegion>,
     layout: CachedLayout,
 }
@@ -148,6 +148,14 @@ impl Allocator {
             _not_sync: PhantomData,
         })
     }
+
+    pub(crate) fn base(&self) -> &AllocatorBase {
+        &self.base
+    }
+
+    pub(crate) fn worker_index(&self) -> u32 {
+        self.worker_index
+    }
 }
 
 unsafe impl Send for Allocator {}
@@ -187,6 +195,10 @@ impl FreeOnlyAllocator {
 
     fn from_base(base: &AllocatorBase) -> Self {
         Self { base: base.clone() }
+    }
+
+    pub(crate) fn base(&self) -> &AllocatorBase {
+        &self.base
     }
 }
 
@@ -324,15 +336,26 @@ impl Allocator {
                 .assigned_worker
                 .load(Ordering::Acquire)
         {
-            // SAFETY: The allocation indexes are valid and come from allocator-owned memory.
-            let (size_index, size) = unsafe { self.slab_size_class(allocation_indexes.slab_index) };
-            self.worker_meta()
-                .outstanding_allocation_bytes
-                .fetch_sub(size as u64, Ordering::Relaxed);
-            self.local_free_with_size_index(allocation_indexes, size_index);
+            // SAFETY: The indexes came from a valid allocation offset and the
+            // ownership check above confirms its slab is local.
+            unsafe { self.free_local(allocation_indexes) };
         } else {
             self.remote_free(offset, allocation_indexes.slab_index);
         }
+    }
+
+    /// Free an allocation known to be owned by this worker.
+    ///
+    /// # Safety
+    /// - `allocation_indexes` must identify a valid allocation in a slab owned
+    ///   by this worker.
+    pub(crate) unsafe fn free_local(&self, allocation_indexes: AllocationIndexes) {
+        // SAFETY: Guaranteed by the caller.
+        let (size_index, size) = unsafe { self.slab_size_class(allocation_indexes.slab_index) };
+        self.worker_meta()
+            .outstanding_allocation_bytes
+            .fetch_sub(size as u64, Ordering::Relaxed);
+        self.local_free_with_size_index(allocation_indexes, size_index);
     }
 
     fn local_free_with_size_index(&self, allocation_indexes: AllocationIndexes, size_index: usize) {
@@ -580,6 +603,78 @@ impl AllocatorBase {
         }
     }
 
+    /// Return the indexes and worker assigned to the allocation at `offset`.
+    ///
+    /// # Safety
+    /// - `offset` must refer to a valid allocation owned by this allocator.
+    pub(crate) unsafe fn allocation_indexes_and_assigned_worker(
+        &self,
+        offset: usize,
+    ) -> Option<(AllocationIndexes, u32)> {
+        let allocation_indexes = self.find_allocation_indexes(offset);
+        // SAFETY: `find_allocation_indexes` guarantees a valid slab index.
+        let slab_meta = unsafe { self.slab_meta(allocation_indexes.slab_index).as_ref() };
+        let worker_index = slab_meta.assigned_worker.load(Ordering::Acquire);
+        debug_assert!(worker_index < self.layout.num_workers);
+        if worker_index >= self.layout.num_workers {
+            return None;
+        }
+        Some((allocation_indexes, worker_index))
+    }
+
+    /// Set the intrusive next link stored within a remotely freed allocation.
+    ///
+    /// # Safety
+    /// - `offset` must refer to a valid, uniquely freed allocation suitable for
+    ///   storing an [`AtomicUsize`].
+    pub(crate) unsafe fn set_remote_free_next(&self, offset: usize, next: usize) {
+        debug_assert_ne!(offset, NULL_USIZE);
+        // SAFETY: Guaranteed by the caller.
+        let remote_free_node: &AtomicUsize =
+            unsafe { self.ptr_from_offset(offset).cast().as_ref() };
+        remote_free_node.store(next, Ordering::Release);
+    }
+
+    /// Publish a private chain to a worker's remote-free stack.
+    ///
+    /// # Safety
+    /// - `worker_index` must be the worker that owns the allocations in the chain.
+    /// - `head` and `tail` must be valid, uniquely freed allocation offsets whose
+    ///   intrusive links form a private chain.
+    pub(crate) unsafe fn publish_remote_free_chain(
+        &self,
+        worker_index: u32,
+        head: usize,
+        tail: usize,
+    ) {
+        debug_assert_ne!(head, NULL_USIZE);
+        debug_assert_ne!(tail, NULL_USIZE);
+        debug_assert!(worker_index < self.layout.num_workers);
+        if worker_index >= self.layout.num_workers {
+            return;
+        }
+
+        // SAFETY: The worker index is checked against the layout above.
+        let worker_meta = unsafe { worker_meta_ptr(self.header(), worker_index).as_ref() };
+        let remote_free_head = &worker_meta.remote_free_head;
+
+        let mut current_head = remote_free_head.load(Ordering::Acquire);
+        loop {
+            // SAFETY: The caller guarantees that `tail` is a valid, uniquely freed
+            // allocation offset.
+            unsafe { self.set_remote_free_next(tail, current_head) };
+            match remote_free_head.compare_exchange(
+                current_head,
+                head,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(next_head) => current_head = next_head,
+            }
+        }
+    }
+
     /// Return offset within a slab.
     ///
     const fn offset_within_slab(slab_size: u32, offset_from_slab_start: usize) -> u32 {
@@ -786,7 +881,7 @@ unsafe fn claim_any_worker_index(header: NonNull<Header>) -> Option<u32> {
     None
 }
 
-struct AllocationIndexes {
+pub(crate) struct AllocationIndexes {
     slab_index: u32,
     index_within_slab: u16,
 }
@@ -1074,6 +1169,65 @@ mod tests {
             allocator_0.find_allocation_indexes(allocator_0.offset(same_slab_allocation))
         };
         assert_eq!(allocation_indexes.slab_index, slab_index);
+    }
+
+    #[test]
+    fn test_remote_free_batch_mixed_owners() {
+        let slab_size = 65536; // 64 KiB
+        let num_workers = 4;
+        let (_file, allocator_0) = initialize_for_test(slab_size, num_workers);
+        let allocator_1 = Allocator::join_from_existing(&allocator_0).unwrap();
+        let allocator_2 = Allocator::join_from_existing(&allocator_0).unwrap();
+        let allocation_size = 2048;
+
+        let allocations_0 = [
+            allocator_0.allocate(allocation_size).unwrap(),
+            allocator_0.allocate(allocation_size).unwrap(),
+        ];
+        let allocations_1 = [
+            allocator_1.allocate(allocation_size).unwrap(),
+            allocator_1.allocate(allocation_size).unwrap(),
+        ];
+        let allocations_2 = [
+            allocator_2.allocate(allocation_size).unwrap(),
+            allocator_2.allocate(allocation_size).unwrap(),
+        ];
+        let offsets = |allocator: &Allocator, allocations: &[NonNull<u8>; 2]| {
+            allocations.map(|allocation| unsafe { allocator.offset(allocation) })
+        };
+        let offsets_0 = offsets(&allocator_0, &allocations_0);
+        let offsets_1 = offsets(&allocator_1, &allocations_1);
+        let offsets_2 = offsets(&allocator_2, &allocations_2);
+
+        let mut batch = allocator_1.remote_free_batch();
+        unsafe {
+            batch.free(allocations_0[0]);
+            batch.free_offset(offsets_1[0]);
+            batch.free_offset(offsets_2[0]);
+            batch.free_offset(offsets_0[1]);
+            batch.free(allocations_1[1]);
+            batch.free_offset(offsets_2[1]);
+        }
+
+        assert_eq!(allocator_1.outstanding_allocation_bytes(), 0);
+        assert_eq!(remote_free_stack(&allocator_0), Vec::<usize>::new());
+        assert_eq!(remote_free_stack(&allocator_2), Vec::<usize>::new());
+
+        batch.flush();
+        assert_eq!(
+            remote_free_stack(&allocator_0),
+            offsets_0.into_iter().rev().collect::<Vec<_>>()
+        );
+        assert_eq!(remote_free_stack(&allocator_1), Vec::<usize>::new());
+        assert_eq!(
+            remote_free_stack(&allocator_2),
+            offsets_2.into_iter().rev().collect::<Vec<_>>()
+        );
+
+        allocator_0.clean_remote_frees();
+        allocator_2.clean_remote_frees();
+        assert_eq!(allocator_0.outstanding_allocation_bytes(), 0);
+        assert_eq!(allocator_2.outstanding_allocation_bytes(), 0);
     }
 
     #[test]
