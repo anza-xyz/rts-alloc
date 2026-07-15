@@ -1187,29 +1187,41 @@ mod tests {
             batch.free(allocations_0[0]);
             batch.free_offset(offsets_1[0]);
             batch.free_offset(offsets_2[0]);
-            batch.free_offset(offsets_0[1]);
-            batch.free(allocations_1[1]);
-            batch.free_offset(offsets_2[1]);
         }
 
-        assert_eq!(allocator_1.outstanding_allocation_bytes(), 0);
+        let free_only_allocator = FreeOnlyAllocator::join_from_existing(&allocator_0);
+        let mut free_only_batch = free_only_allocator.remote_free_batch();
+        unsafe {
+            free_only_batch.free_offset(offsets_0[1]);
+            free_only_batch.free(allocations_1[1]);
+            free_only_batch.free_offset(offsets_2[1]);
+        }
+
+        assert_eq!(
+            allocator_1.outstanding_allocation_bytes(),
+            u64::from(allocation_size)
+        );
         assert_eq!(remote_free_stack(&allocator_0), Vec::<usize>::new());
+        assert_eq!(remote_free_stack(&allocator_1), Vec::<usize>::new());
         assert_eq!(remote_free_stack(&allocator_2), Vec::<usize>::new());
 
         batch.flush();
+        free_only_batch.flush();
         assert_eq!(
             remote_free_stack(&allocator_0),
             offsets_0.into_iter().rev().collect::<Vec<_>>()
         );
-        assert_eq!(remote_free_stack(&allocator_1), Vec::<usize>::new());
+        assert_eq!(remote_free_stack(&allocator_1), vec![offsets_1[1]]);
         assert_eq!(
             remote_free_stack(&allocator_2),
             offsets_2.into_iter().rev().collect::<Vec<_>>()
         );
 
         allocator_0.clean_remote_frees();
+        allocator_1.clean_remote_frees();
         allocator_2.clean_remote_frees();
         assert_eq!(allocator_0.outstanding_allocation_bytes(), 0);
+        assert_eq!(allocator_1.outstanding_allocation_bytes(), 0);
         assert_eq!(allocator_2.outstanding_allocation_bytes(), 0);
     }
 
