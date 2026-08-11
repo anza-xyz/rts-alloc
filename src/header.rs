@@ -4,7 +4,7 @@ use crate::sync::{AtomicU32, AtomicU64, AtomicU8, AtomicUsize};
 
 /// Unique identifier for rts-alloc in shared memory.
 pub const MAGIC: u64 = u64::from_be_bytes(*b"\0rtsaloc");
-pub const VERSION_MAJOR: u16 = 3;
+pub const VERSION_MAJOR: u16 = 4;
 pub const VERSION_PATCH: u16 = 0;
 pub const VERSION: u32 = (VERSION_MAJOR as u32) << 16 | VERSION_PATCH as u32;
 
