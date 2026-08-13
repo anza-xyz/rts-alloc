@@ -59,3 +59,25 @@ jobs:
 
       - name: Run shuttle tests
         run: cargo test --all-targets --features shuttle shuttle_tests
+
+  minimal-versions:
+    name: Check minimal-versions
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Git Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install minimal-version tools
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d  # v2.85.12
+        with:
+          tool: cargo-hack,cargo-minimal-versions
+
+      - name: Run minimal-versions check
+        run: cargo minimal-versions check --direct --all-features
