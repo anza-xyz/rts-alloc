@@ -99,6 +99,10 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
           ref: ${{ needs.check.outputs.ref }}
+          # Default depth is 1. We need Entire history
+          # for git-cliff to view the history to generate
+          # the changelog
+          fetch-depth: 0
 
       - run: |
           git tag -a "${TAG}" -m "Release ${TAG}"
@@ -124,9 +128,17 @@ jobs:
           CRATE_NAME: ${{ inputs.crate }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v4.8.0
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGELOG.md
+
       - name: Create Github Release
         run: |
-          gh release create "${TAG}" --title "${TAG}" --generate-notes
+          gh release create "${TAG}" --title "${TAG}" --notes-file CHANGELOG.md
         env:
           TAG: ${{ needs.check.outputs.tag }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
