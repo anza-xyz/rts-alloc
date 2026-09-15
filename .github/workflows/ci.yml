@@ -75,7 +75,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install minimal-version tools
-        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d  # v2.85.12
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375  # v2.87.12
         with:
           tool: cargo-hack,cargo-minimal-versions
 
